@@ -457,6 +457,12 @@ type PCInitiateMessage struct {
 	EroObject               *EroObject
 	AssociationObject       *AssociationObject
 	VendorInformationObject *VendorInformationObject
+	// AssociationBeforeERO places ASSOCIATION right after LSP (before
+	// END-POINTS/ERO) instead of the RFC 8697/9862 ABNF position after ERO.
+	// Confirmed against a live Nokia 7750 that its PCInitiate parser closes
+	// the session ("ObjClass 40 ObjType 1 out of order") when ASSOCIATION
+	// follows ERO, despite that being the spec-compliant position.
+	AssociationBeforeERO bool
 }
 
 func (m *PCInitiateMessage) Serialize() ([]uint8, error) {
@@ -521,9 +527,16 @@ func (m *PCInitiateMessage) Serialize() ([]uint8, error) {
 
 	pcinitiateHeader := NewCommonHeader(MessageTypeLSPInitReq, pcinitiateMessageLength)
 	bytePCInitiateHeader := pcinitiateHeader.Serialize()
-	bytePCInitiateMessage := AppendByteSlices(
-		bytePCInitiateHeader, byteSrpObject, byteLSPObject, byteEndpointsObject, byteEroObject, byteAssociationObject, byteVendorInformationObject,
-	)
+	var bytePCInitiateMessage []uint8
+	if m.AssociationBeforeERO {
+		bytePCInitiateMessage = AppendByteSlices(
+			bytePCInitiateHeader, byteSrpObject, byteLSPObject, byteAssociationObject, byteEndpointsObject, byteEroObject, byteVendorInformationObject,
+		)
+	} else {
+		bytePCInitiateMessage = AppendByteSlices(
+			bytePCInitiateHeader, byteSrpObject, byteLSPObject, byteEndpointsObject, byteEroObject, byteAssociationObject, byteVendorInformationObject,
+		)
+	}
 	return bytePCInitiateMessage, nil
 }
 
@@ -597,6 +610,10 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 		if m.AssociationObject, err = NewAssociationObject(srcAddr, dstAddr, color, preference, OriginatorASN(opts.originatorASN), MinimalAssociationTLVs(true)); err != nil {
 			return nil, err
 		}
+		// Confirmed live: this box rejects the message ("ObjClass 40 ObjType 1
+		// out of order") when ASSOCIATION follows ERO, the RFC 8697/9862
+		// ABNF-compliant position.
+		m.AssociationBeforeERO = true
 	default:
 		return nil, errors.New("undefined pcc type")
 	}

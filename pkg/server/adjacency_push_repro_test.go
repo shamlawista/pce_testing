@@ -120,6 +120,41 @@ func TestReproPushTestYAML(t *testing.T) {
 	assert.Contains(t, tlvTypes, uint16(extendedAssociationIDType), "NokiaLegacy ASSOCIATION object should keep EXTENDED-ASSOCIATION-ID for color/endpoint")
 	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathIDType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-ID (RFC 9862)")
 	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathPreferenceType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-PREFERENCE (RFC 9862)")
+
+	// Confirmed live: this Nokia box closes the session ("ObjClass 40 ObjType 1
+	// out of order") when ASSOCIATION follows ERO, so it must come first.
+	classes := objectClassSequence(t, body)
+	assocIdx := indexOf(classes, associationObjectClass)
+	eroIdx := indexOf(classes, eroObjectClass)
+	require.GreaterOrEqual(t, assocIdx, 0, "ASSOCIATION object not found")
+	require.GreaterOrEqual(t, eroIdx, 0, "ERO object not found")
+	assert.Less(t, assocIdx, eroIdx, "ASSOCIATION must be serialized before ERO for a NokiaLegacy peer")
+}
+
+// objectClassSequence returns the PCEP object class byte of every object in
+// body, in wire order.
+func objectClassSequence(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var classes []byte
+	off := 0
+	for off+4 <= len(body) {
+		objLen := int(binary.BigEndian.Uint16(body[off+2 : off+4]))
+		if objLen < 4 || off+objLen > len(body) {
+			break
+		}
+		classes = append(classes, body[off])
+		off += objLen
+	}
+	return classes
+}
+
+func indexOf(classes []byte, want byte) int {
+	for i, c := range classes {
+		if c == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // tlvTypesIn walks a TLV-only byte region (type(2)+length(2)+value+padding)

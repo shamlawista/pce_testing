@@ -253,3 +253,73 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 		})
 	}
 }
+
+// Nokia's PCEP parser closes the session ("ObjClass 40 ObjType 1 out of
+// order") when ASSOCIATION follows ERO - the RFC 8697/9862 ABNF-compliant
+// position - so NokiaLegacy must serialize it right after LSP instead.
+// Other pccTypes keep the spec-compliant after-ERO position.
+func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
+	t.Parallel()
+
+	srcAddr := netip.MustParseAddr("192.0.2.1")
+	dstAddr := netip.MustParseAddr("192.0.2.2")
+	segmentList := []table.Segment{table.NewSegmentSRMPLS(16001)}
+
+	cases := map[string]struct {
+		pccType            PccType
+		wantAssocBeforeEro bool
+	}{
+		"RFCCompliant":    {pccType: RFCCompliant, wantAssocBeforeEro: false},
+		"FRRoutingLegacy": {pccType: FRRoutingLegacy, wantAssocBeforeEro: false},
+		"NokiaLegacy":     {pccType: NokiaLegacy, wantAssocBeforeEro: true},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			m, err := NewPCInitiateMessage(1, "policy1", false, 0, segmentList, 100, 200, srcAddr, dstAddr, VendorSpecific(tt.pccType))
+			require.NoError(t, err, "NewPCInitiateMessage failed")
+
+			raw, err := m.Serialize()
+			require.NoError(t, err, "Serialize failed")
+
+			classes := objectClassSequence(t, raw[CommonHeaderLength:])
+			assocIdx := indexOfClass(classes, ObjectClassAssociation)
+			eroIdx := indexOfClass(classes, ObjectClassERO)
+			require.GreaterOrEqual(t, assocIdx, 0, "ASSOCIATION object not found in wire bytes: classes=%v", classes)
+			require.GreaterOrEqual(t, eroIdx, 0, "ERO object not found in wire bytes: classes=%v", classes)
+
+			if tt.wantAssocBeforeEro {
+				assert.Less(t, assocIdx, eroIdx, "expected ASSOCIATION before ERO")
+			} else {
+				assert.Greater(t, assocIdx, eroIdx, "expected ASSOCIATION after ERO")
+			}
+		})
+	}
+}
+
+// objectClassSequence walks the common object headers in body (RFC 5440 §7.2)
+// and returns the ObjectClass of each object in wire order.
+func objectClassSequence(t *testing.T, body []byte) []ObjectClass {
+	t.Helper()
+	var classes []ObjectClass
+	off := 0
+	for off+int(commonObjectHeaderLength) <= len(body) {
+		var h CommonObjectHeader
+		require.NoError(t, h.DecodeFromBytes(body[off:]))
+		require.GreaterOrEqualf(t, int(h.ObjectLength), int(commonObjectHeaderLength), "object at offset %d has invalid length %d", off, h.ObjectLength)
+		classes = append(classes, h.ObjectClass)
+		off += int(h.ObjectLength)
+	}
+	return classes
+}
+
+func indexOfClass(classes []ObjectClass, want ObjectClass) int {
+	for i, c := range classes {
+		if c == want {
+			return i
+		}
+	}
+	return -1
+}
