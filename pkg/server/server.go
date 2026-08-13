@@ -29,6 +29,7 @@ type Server struct {
 	logger      *zap.Logger
 	asn         uint32
 	frrPeers    map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
+	nokiaPeers  map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
 }
 
 // TED returns the current TED snapshot. Safe for concurrent use with setTED.
@@ -56,6 +57,10 @@ type PCEOptions struct {
 	// (pcep.FRRoutingLegacy) rather than auto-detected, since FRR cannot be
 	// distinguished from any other RFC-compliant PCC via its OPEN message.
 	FRRPeers []netip.Addr
+	// NokiaPeers lists PCEP peer addresses that must be treated as Nokia SR OS
+	// (pcep.NokiaLegacy) rather than auto-detected, since Nokia cannot be
+	// distinguished from any other RFC-compliant PCC via its OPEN message.
+	NokiaPeers []netip.Addr
 }
 
 func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem) Error {
@@ -63,11 +68,16 @@ func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem
 	for _, addr := range o.FRRPeers {
 		frrPeers[addr] = struct{}{}
 	}
+	nokiaPeers := make(map[netip.Addr]struct{}, len(o.NokiaPeers))
+	for _, addr := range o.NokiaPeers {
+		nokiaPeers[addr] = struct{}{}
+	}
 
 	s := &Server{
-		logger:   logger,
-		asn:      o.ASN,
-		frrPeers: frrPeers,
+		logger:     logger,
+		asn:        o.ASN,
+		frrPeers:   frrPeers,
+		nokiaPeers: nokiaPeers,
 	}
 	if o.TEDEnable {
 		s.setTED(&table.LsTED{
@@ -152,6 +162,9 @@ func (s *Server) Serve(address string, port string, usidMode bool) error {
 		ss := NewSession(sessionID, peerAddrPort.Addr(), tcpConn, s.logger, s.TED(), s.asn)
 		if _, ok := s.frrPeers[peerAddrPort.Addr()]; ok {
 			ss.forceFRR = true
+		}
+		if _, ok := s.nokiaPeers[peerAddrPort.Addr()]; ok {
+			ss.forceNokia = true
 		}
 		ss.logger.Info("start PCEP session")
 

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
@@ -39,6 +40,12 @@ import (
 // the raw PCInitiate message bytes actually written to the wire so they can
 // be inspected against RFC 8664 §4.3.1 without needing the live peer.
 //
+// The session is pinned to pcep.NokiaLegacy, confirmed live against a Nokia
+// 7750 (SR OS 26.7.R1): its PCEP parser closes the session with reason 3
+// ("malformed PCEP message") when the ASSOCIATION object carries the
+// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs, so PCInitiate must omit the
+// ASSOCIATION object for this pccType - asserted below.
+//
 // Note: localInterfaceId/remoteInterfaceId/unnumbered are all absent, so this
 // segment resolves to NAITypeSRIPv4Adjacency (NT=3, "numbered" IPv4
 // adjacency) - a path the existing nokia_adjacency_sid_wire_test.go does NOT
@@ -52,6 +59,7 @@ func TestReproPushTestYAML(t *testing.T) {
 	peerAddr := netip.MustParseAddr("213.119.192.12")
 	ss := NewSession(1, peerAddr, server, zap.NewNop(), nil, 0)
 	ss.isSynced = true
+	ss.pccType = pcep.NokiaLegacy
 
 	pce := &Server{sessionList: []*Session{ss}}
 	apiServer := &APIServer{pce: pce, logger: zap.NewNop()}
@@ -99,6 +107,25 @@ func TestReproPushTestYAML(t *testing.T) {
 	t.Logf("declared MessageLength: %d, actual bytes on wire: %d", ch.MessageLength, len(full))
 	t.Logf("full PCInitiate message (hex): %s", hex.EncodeToString(full))
 	dumpObjects(t, body)
+
+	const associationObjectClass = 40
+	assert.NotContains(t, objectClasses(body), byte(associationObjectClass),
+		"PCInitiate to a NokiaLegacy peer must not carry an ASSOCIATION object")
+}
+
+// objectClasses returns the PCEP object class byte of every object in body.
+func objectClasses(body []byte) []byte {
+	var classes []byte
+	off := 0
+	for off+4 <= len(body) {
+		objLen := int(binary.BigEndian.Uint16(body[off+2 : off+4]))
+		if objLen < 4 || off+objLen > len(body) {
+			break
+		}
+		classes = append(classes, body[off])
+		off += objLen
+	}
+	return classes
 }
 
 // dumpObjects walks the PCEP common-object headers in body and logs each

@@ -1654,6 +1654,17 @@ const (
 	// advertises the same capabilities as any other RFC-compliant PCC), so it must
 	// be selected explicitly per peer (see PCEOptions.FRRPeers).
 	FRRoutingLegacy
+	// NokiaLegacy is RFC compliant on the wire except that PCInitiate omits the
+	// ASSOCIATION object entirely. Confirmed against a live Nokia 7750 (SR OS
+	// 26.7.R1): its PCEP parser closes the session with reason 3 ("malformed
+	// PCEP message") when the ASSOCIATION object carries the RFC 9862
+	// SRPOLICY-CPATH-ID / SRPOLICY-CPATH-PREFERENCE TLVs, even though those
+	// TLVs are correctly registered (IANA PCEP TLV Type Indicators) and
+	// RFC 5440 §7.1 requires unrecognized TLVs to be silently ignored - this
+	// release just doesn't implement RFC 9862. Cannot be auto-detected from
+	// the OPEN message, so it must be selected explicitly per peer (see
+	// PCEOptions.NokiaPeers).
+	NokiaLegacy
 )
 
 // Determine PCC type from capability
@@ -1994,10 +2005,9 @@ func (o *VendorInformationObject) subTLVUint32(typ TLVType) uint32 {
 }
 
 type optParams struct {
-	pccType              PccType
-	originatorASN        uint32
-	includeColorTLV      bool
-	skipAssociationDebug bool
+	pccType         PccType
+	originatorASN   uint32
+	includeColorTLV bool
 }
 
 type Opt func(*optParams)
@@ -2017,17 +2027,6 @@ func VendorSpecific(pt PccType) Opt {
 func IncludeColorTLV(include bool) Opt {
 	return func(op *optParams) {
 		op.includeColorTLV = include
-	}
-}
-
-// SkipAssociationObjectDebug is a TEMPORARY diagnostic-only toggle: when true,
-// NewPCInitiateMessage omits the ASSOCIATION object entirely, to isolate
-// whether a peer's PCEP parser is rejecting the RFC 9862 SR Policy
-// association TLVs. Remove once the Nokia "malformed PCEP message" close is
-// root-caused.
-func SkipAssociationObjectDebug(skip bool) Opt {
-	return func(op *optParams) {
-		op.skipAssociationDebug = skip
 	}
 }
 

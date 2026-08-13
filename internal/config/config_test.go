@@ -223,6 +223,45 @@ global:
 `,
 			wantErr: true,
 		},
+		{
+			name: "valid nokiaPeers",
+			config: `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+    nokiaPeers:
+      - "213.119.192.12"
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+`,
+		},
+		{
+			name: "invalid nokiaPeers entry",
+			config: `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+    nokiaPeers:
+      - "not-an-address"
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

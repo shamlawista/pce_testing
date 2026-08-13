@@ -21,6 +21,10 @@ type PCEP struct {
 	// auto-detected, since FRR cannot be distinguished from any other RFC-compliant
 	// PCC via its OPEN message.
 	FRRPeers []string `yaml:"frrPeers"`
+	// NokiaPeers lists peer addresses that must be treated as Nokia SR OS rather
+	// than auto-detected, since Nokia cannot be distinguished from any other
+	// RFC-compliant PCC via its OPEN message.
+	NokiaPeers []string `yaml:"nokiaPeers"`
 }
 
 type GRPCServer struct {
@@ -96,6 +100,11 @@ func (c *Config) Validate() error {
 	for _, peer := range c.Global.PCEP.FRRPeers {
 		if _, err := netip.ParseAddr(peer); err != nil {
 			errs = append(errs, fmt.Errorf("global.pcep.frrPeers contains invalid address %q: %w", peer, err))
+		}
+	}
+	for _, peer := range c.Global.PCEP.NokiaPeers {
+		if _, err := netip.ParseAddr(peer); err != nil {
+			errs = append(errs, fmt.Errorf("global.pcep.nokiaPeers contains invalid address %q: %w", peer, err))
 		}
 	}
 	if c.Global.GRPCServer.Address == "" {

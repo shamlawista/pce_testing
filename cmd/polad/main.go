@@ -95,22 +95,27 @@ func main() {
 		}
 	}
 
-	// FRRPeers were already validated as parseable addresses in c.Validate().
+	// FRRPeers/NokiaPeers were already validated as parseable addresses in c.Validate().
 	frrPeers := make([]netip.Addr, 0, len(c.Global.PCEP.FRRPeers))
 	for _, peer := range c.Global.PCEP.FRRPeers {
 		frrPeers = append(frrPeers, netip.MustParseAddr(peer))
 	}
+	nokiaPeers := make([]netip.Addr, 0, len(c.Global.PCEP.NokiaPeers))
+	for _, peer := range c.Global.PCEP.NokiaPeers {
+		nokiaPeers = append(nokiaPeers, netip.MustParseAddr(peer))
+	}
 
 	// Start PCE server
 	o := &server.PCEOptions{
-		PCEPAddr:  c.Global.PCEP.Address,
-		PCEPPort:  c.Global.PCEP.Port,
-		GRPCAddr:  c.Global.GRPCServer.Address,
-		GRPCPort:  c.Global.GRPCServer.Port,
-		TEDEnable: c.Global.TED.Enable,
-		USidMode:  c.Global.USidMode,
-		ASN:       c.Global.TED.ASN,
-		FRRPeers:  frrPeers,
+		PCEPAddr:   c.Global.PCEP.Address,
+		PCEPPort:   c.Global.PCEP.Port,
+		GRPCAddr:   c.Global.GRPCServer.Address,
+		GRPCPort:   c.Global.GRPCServer.Port,
+		TEDEnable:  c.Global.TED.Enable,
+		USidMode:   c.Global.USidMode,
+		ASN:        c.Global.TED.ASN,
+		FRRPeers:   frrPeers,
+		NokiaPeers: nokiaPeers,
 	}
 	if serverErr := server.NewPCE(o, logger, tedElemsChan); serverErr.Error != nil {
 		logger.Panic("Failed to start new server", zap.String("server", serverErr.Server), zap.Error(serverErr.Error))

@@ -629,6 +629,45 @@ func TestReceiveOpenForceFRROverridesDetection(t *testing.T) {
 	}
 }
 
+// forceNokia must override auto-detection the same way forceFRR does: Nokia
+// SR OS advertises the same capabilities as any other RFC-compliant PCC, so
+// it cannot be told apart from the OPEN message alone.
+func TestReceiveOpenForceNokiaOverridesDetection(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Errorf("failed to close server connection: %v", err)
+		}
+	})
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	openMessage, err := pcep.NewOpenMessage(1, 30, nil)
+	if err != nil {
+		t.Fatalf("failed to create open message: %v", err)
+	}
+	byteOpenMessage, err := openMessage.Serialize()
+	if err != nil {
+		t.Fatalf("failed to serialize open message: %v", err)
+	}
+	if _, err := client.Write(byteOpenMessage); err != nil {
+		t.Fatalf("failed to write open message: %v", err)
+	}
+
+	ss := NewSession(1, netip.MustParseAddr("213.119.192.12"), server, zap.NewNop(), nil, 0)
+	ss.forceNokia = true
+	if err := ss.ReceiveOpen(); err != nil {
+		t.Fatalf("ReceiveOpen returned an error: %v", err)
+	}
+
+	if ss.pccType != pcep.NokiaLegacy {
+		t.Errorf("pccType: got %v, want NokiaLegacy", ss.pccType)
+	}
+}
+
 // SendPCInitiate must only attach the LSP object's Color TLV
 // (draft-ietf-pce-pcep-color / RFC 9863) when the peer's OPEN advertised the
 // Color Capability bit. Some real PCCs (e.g. Nokia SR OS) do not advertise

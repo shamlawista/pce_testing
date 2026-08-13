@@ -588,12 +588,12 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 		if m.VendorInformationObject, err = NewVendorInformationObject(CiscoLegacy, color, preference); err != nil {
 			return nil, err
 		}
+	case NokiaLegacy:
+		// No ASSOCIATION object: confirmed against a live Nokia 7750 that its
+		// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs cause the whole message
+		// to be rejected as malformed.
 	default:
 		return nil, errors.New("undefined pcc type")
-	}
-
-	if opts.skipAssociationDebug {
-		m.AssociationObject = nil
 	}
 
 	return m, nil

@@ -204,6 +204,10 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 			wantAssocType:   AssociationTypeSRPolicyAssociation,
 			wantVendorInfo:  true,
 		},
+		"NokiaLegacy": {
+			pccType:        NokiaLegacy,
+			wantVendorInfo: false,
+		},
 	}
 
 	for name, tt := range cases {
