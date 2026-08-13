@@ -1833,15 +1833,21 @@ func NewAssociationObject(srcAddr netip.Addr, dstAddr netip.Addr, color uint32, 
 				Color:    color,
 				Endpoint: dstAddr,
 			},
-			&SRPolicyCandidatePathIdentifier{
-				ProtocolOrigin: ProtocolOriginPCEP, // this PCE originates the candidate path
-				OriginatorASN:  opts.originatorASN,
-				OriginatorAddr: dstAddr,
-				Discriminator:  1, // keep existing wire value
-			},
-			&SRPolicyCandidatePathPreference{
-				Preference: preference,
-			},
+		}
+		if !opts.minimalAssociationTLVs {
+			// SRPOLICY-CPATH-ID / SRPOLICY-CPATH-PREFERENCE (RFC 9862). Some PCEP
+			// implementations don't support these TLVs yet; see MinimalAssociationTLVs.
+			associationObjectTLVs = append(associationObjectTLVs,
+				&SRPolicyCandidatePathIdentifier{
+					ProtocolOrigin: ProtocolOriginPCEP, // this PCE originates the candidate path
+					OriginatorASN:  opts.originatorASN,
+					OriginatorAddr: dstAddr,
+					Discriminator:  1, // keep existing wire value
+				},
+				&SRPolicyCandidatePathPreference{
+					Preference: preference,
+				},
+			)
 		}
 		o.TLVs = append(o.TLVs, associationObjectTLVs...)
 	}
@@ -2005,9 +2011,10 @@ func (o *VendorInformationObject) subTLVUint32(typ TLVType) uint32 {
 }
 
 type optParams struct {
-	pccType         PccType
-	originatorASN   uint32
-	includeColorTLV bool
+	pccType                PccType
+	originatorASN          uint32
+	includeColorTLV        bool
+	minimalAssociationTLVs bool
 }
 
 type Opt func(*optParams)
@@ -2033,5 +2040,16 @@ func IncludeColorTLV(include bool) Opt {
 func OriginatorASN(asn uint32) Opt {
 	return func(op *optParams) {
 		op.originatorASN = asn
+	}
+}
+
+// MinimalAssociationTLVs controls whether NewAssociationObject attaches the
+// RFC 9862 SRPOLICY-CPATH-ID / SRPOLICY-CPATH-PREFERENCE TLVs. When true,
+// only EXTENDED-ASSOCIATION-ID (color/endpoint) is included. Confirmed
+// against a live Nokia 7750 (SR OS 26.7.R1) that the two RFC 9862 TLVs cause
+// the whole PCEP message to be rejected as malformed.
+func MinimalAssociationTLVs(minimal bool) Opt {
+	return func(op *optParams) {
+		op.minimalAssociationTLVs = minimal
 	}
 }

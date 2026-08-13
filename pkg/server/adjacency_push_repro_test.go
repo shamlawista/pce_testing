@@ -43,8 +43,9 @@ import (
 // The session is pinned to pcep.NokiaLegacy, confirmed live against a Nokia
 // 7750 (SR OS 26.7.R1): its PCEP parser closes the session with reason 3
 // ("malformed PCEP message") when the ASSOCIATION object carries the
-// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs, so PCInitiate must omit the
-// ASSOCIATION object for this pccType - asserted below.
+// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs, so PCInitiate keeps a minimal
+// ASSOCIATION object (EXTENDED-ASSOCIATION-ID only) for this pccType -
+// asserted below.
 //
 // Note: localInterfaceId/remoteInterfaceId/unnumbered are all absent, so this
 // segment resolves to NAITypeSRIPv4Adjacency (NT=3, "numbered" IPv4
@@ -109,23 +110,32 @@ func TestReproPushTestYAML(t *testing.T) {
 	dumpObjects(t, body)
 
 	const associationObjectClass = 40
-	assert.NotContains(t, objectClasses(body), byte(associationObjectClass),
-		"PCInitiate to a NokiaLegacy peer must not carry an ASSOCIATION object")
+	assocBody := findObjectBody(t, body, associationObjectClass)
+	tlvTypes := tlvTypesIn(t, assocBody[12:]) // skip the fixed reserved/flags/assoctype/associd/assocsrc(IPv4) header
+
+	const extendedAssociationIDType = 0x1f   // 31, RFC 8697
+	const srPolicyCPathIDType = 0x39         // 57, RFC 9862
+	const srPolicyCPathPreferenceType = 0x3b // 59, RFC 9862
+
+	assert.Contains(t, tlvTypes, uint16(extendedAssociationIDType), "NokiaLegacy ASSOCIATION object should keep EXTENDED-ASSOCIATION-ID for color/endpoint")
+	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathIDType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-ID (RFC 9862)")
+	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathPreferenceType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-PREFERENCE (RFC 9862)")
 }
 
-// objectClasses returns the PCEP object class byte of every object in body.
-func objectClasses(body []byte) []byte {
-	var classes []byte
+// tlvTypesIn walks a TLV-only byte region (type(2)+length(2)+value+padding)
+// and returns the type of each TLV found.
+func tlvTypesIn(t *testing.T, tlvBytes []byte) []uint16 {
+	t.Helper()
+	var types []uint16
 	off := 0
-	for off+4 <= len(body) {
-		objLen := int(binary.BigEndian.Uint16(body[off+2 : off+4]))
-		if objLen < 4 || off+objLen > len(body) {
-			break
-		}
-		classes = append(classes, body[off])
-		off += objLen
+	for off+4 <= len(tlvBytes) {
+		typ := binary.BigEndian.Uint16(tlvBytes[off : off+2])
+		valLen := int(binary.BigEndian.Uint16(tlvBytes[off+2 : off+4]))
+		types = append(types, typ)
+		padded := (valLen + 3) &^ 3 // round up to a 4-byte boundary
+		off += 4 + padded
 	}
-	return classes
+	return types
 }
 
 // dumpObjects walks the PCEP common-object headers in body and logs each

@@ -205,8 +205,10 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 			wantVendorInfo:  true,
 		},
 		"NokiaLegacy": {
-			pccType:        NokiaLegacy,
-			wantVendorInfo: false,
+			pccType:         NokiaLegacy,
+			wantAssociation: true,
+			wantAssocType:   AssociationTypeSRPolicyAssociation,
+			wantVendorInfo:  false,
 		},
 	}
 
@@ -229,6 +231,24 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 				assert.Equal(t, EnterpriseNumberCisco, m.VendorInformationObject.EnterpriseNumber, "unexpected EnterpriseNumber")
 			} else {
 				assert.Nil(t, m.VendorInformationObject, "VendorInformationObject should not be set")
+			}
+
+			if tt.pccType == NokiaLegacy {
+				require.NotNil(t, m.AssociationObject)
+				var hasExtendedAssocID, hasCpathID, hasCpathPreference bool
+				for _, tlv := range m.AssociationObject.TLVs {
+					switch tlv.(type) {
+					case *ExtendedAssociationID:
+						hasExtendedAssocID = true
+					case *SRPolicyCandidatePathIdentifier:
+						hasCpathID = true
+					case *SRPolicyCandidatePathPreference:
+						hasCpathPreference = true
+					}
+				}
+				assert.True(t, hasExtendedAssocID, "NokiaLegacy ASSOCIATION object should keep EXTENDED-ASSOCIATION-ID for color/endpoint")
+				assert.False(t, hasCpathID, "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-ID (RFC 9862)")
+				assert.False(t, hasCpathPreference, "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-PREFERENCE (RFC 9862)")
 			}
 		})
 	}

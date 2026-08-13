@@ -589,9 +589,14 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 			return nil, err
 		}
 	case NokiaLegacy:
-		// No ASSOCIATION object: confirmed against a live Nokia 7750 that its
-		// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs cause the whole message
-		// to be rejected as malformed.
+		// Minimal ASSOCIATION object: confirmed against a live Nokia 7750 that
+		// its RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs cause the whole
+		// message to be rejected as malformed. Keep EXTENDED-ASSOCIATION-ID
+		// (color/endpoint) - the LSP instantiation logic on that box appears to
+		// need it even though PCEP parsing itself doesn't require it.
+		if m.AssociationObject, err = NewAssociationObject(srcAddr, dstAddr, color, preference, OriginatorASN(opts.originatorASN), MinimalAssociationTLVs(true)); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errors.New("undefined pcc type")
 	}
