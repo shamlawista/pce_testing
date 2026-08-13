@@ -183,6 +183,46 @@ global:
 `,
 			wantErr: true,
 		},
+		{
+			name: "valid frrPeers",
+			config: `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+    frrPeers:
+      - "10.0.0.1"
+      - "10.0.0.2"
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+`,
+		},
+		{
+			name: "invalid frrPeers entry",
+			config: `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+    frrPeers:
+      - "not-an-address"
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

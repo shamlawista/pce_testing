@@ -28,6 +28,7 @@ type Server struct {
 	ted         *table.LsTED
 	logger      *zap.Logger
 	asn         uint32
+	frrPeers    map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
 }
 
 // TED returns the current TED snapshot. Safe for concurrent use with setTED.
@@ -51,12 +52,22 @@ type PCEOptions struct {
 	TEDEnable bool
 	USidMode  bool
 	ASN       uint32
+	// FRRPeers lists PCEP peer addresses that must be treated as FRRouting
+	// (pcep.FRRoutingLegacy) rather than auto-detected, since FRR cannot be
+	// distinguished from any other RFC-compliant PCC via its OPEN message.
+	FRRPeers []netip.Addr
 }
 
 func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem) Error {
+	frrPeers := make(map[netip.Addr]struct{}, len(o.FRRPeers))
+	for _, addr := range o.FRRPeers {
+		frrPeers[addr] = struct{}{}
+	}
+
 	s := &Server{
-		logger: logger,
-		asn:    o.ASN,
+		logger:   logger,
+		asn:      o.ASN,
+		frrPeers: frrPeers,
 	}
 	if o.TEDEnable {
 		s.setTED(&table.LsTED{
@@ -139,6 +150,9 @@ func (s *Server) Serve(address string, port string, usidMode bool) error {
 			return fmt.Errorf("failed to parse remote address %s: %w", tcpConn.RemoteAddr().String(), err)
 		}
 		ss := NewSession(sessionID, peerAddrPort.Addr(), tcpConn, s.logger, s.TED(), s.asn)
+		if _, ok := s.frrPeers[peerAddrPort.Addr()]; ok {
+			ss.forceFRR = true
+		}
 		ss.logger.Info("start PCEP session")
 
 		s.sessionMu.Lock()

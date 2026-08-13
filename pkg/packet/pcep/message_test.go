@@ -149,6 +149,12 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 			pccType:         RFCCompliant,
 			wantAssociation: true,
 			wantAssocType:   AssociationTypeSRPolicyAssociation,
+			wantVendorInfo:  false,
+		},
+		"FRRoutingLegacy": {
+			pccType:         FRRoutingLegacy,
+			wantAssociation: true,
+			wantAssocType:   AssociationTypeSRPolicyAssociation,
 			wantVendorInfo:  true,
 		},
 	}

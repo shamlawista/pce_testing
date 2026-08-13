@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,10 @@ import (
 type PCEP struct {
 	Address string `yaml:"address"`
 	Port    string `yaml:"port"`
+	// FRRPeers lists peer addresses that must be treated as FRRouting rather than
+	// auto-detected, since FRR cannot be distinguished from any other RFC-compliant
+	// PCC via its OPEN message.
+	FRRPeers []string `yaml:"frrPeers"`
 }
 
 type GRPCServer struct {
@@ -87,6 +92,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Global.PCEP.Port == "" {
 		errs = append(errs, errors.New("global.pcep.port is required"))
+	}
+	for _, peer := range c.Global.PCEP.FRRPeers {
+		if _, err := netip.ParseAddr(peer); err != nil {
+			errs = append(errs, fmt.Errorf("global.pcep.frrPeers contains invalid address %q: %w", peer, err))
+		}
 	}
 	if c.Global.GRPCServer.Address == "" {
 		errs = append(errs, errors.New("global.grpcServer.address is required"))

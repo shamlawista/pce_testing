@@ -50,6 +50,7 @@ type Session struct {
 	logger                  *zap.Logger
 	keepAlive               uint8
 	pccType                 pcep.PccType
+	forceFRR                bool // set by the server before Established() if this peer is listed under PCEOptions.FRRPeers.
 	advertisedCapabilities  []pcep.CapabilityInterface // Capabilities Pola advertises to the PCC.
 	receivedPccCapabilities []pcep.CapabilityInterface // Capabilities received from the PCC.
 	ted                     *table.LsTED
@@ -293,8 +294,14 @@ func (ss *Session) ReceiveOpen() error {
 	ss.setAdvertisedCapabilities(pcep.PolaCapability(openMessage.OpenObject.Caps))
 
 	// pccType detection
-	// * FRRouting cannot be detected from the open message, so it is treated as an RFC compliant
-	ss.pccType = pcep.DeterminePccType(ss.receivedPccCapabilities)
+	// FRRouting cannot be detected from the open message (it advertises the same
+	// capabilities as any other RFC-compliant PCC), so forceFRR - set explicitly
+	// per peer via PCEOptions.FRRPeers - takes precedence over auto-detection.
+	if ss.forceFRR {
+		ss.pccType = pcep.FRRoutingLegacy
+	} else {
+		ss.pccType = pcep.DeterminePccType(ss.receivedPccCapabilities)
+	}
 	ss.logger.Debug("Determine PCC Type", zap.Int("pcc-type", int(ss.pccType)))
 	ss.keepAlive = openMessage.OpenObject.Keepalive
 

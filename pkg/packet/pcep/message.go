@@ -573,7 +573,12 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 		if m.AssociationObject, err = NewAssociationObject(srcAddr, dstAddr, color, preference, OriginatorASN(opts.originatorASN)); err != nil {
 			return nil, err
 		}
-		// FRRouting is considered RFC compliant
+	case FRRoutingLegacy:
+		if m.AssociationObject, err = NewAssociationObject(srcAddr, dstAddr, color, preference, OriginatorASN(opts.originatorASN)); err != nil {
+			return nil, err
+		}
+		// Older FRRouting builds (predating full RFC 9256 support) only parse
+		// color/preference from the Cisco-format VENDOR-INFORMATION blob.
 		if m.VendorInformationObject, err = NewVendorInformationObject(CiscoLegacy, color, preference); err != nil {
 			return nil, err
 		}

@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 
 	"go.uber.org/zap"
@@ -94,6 +95,12 @@ func main() {
 		}
 	}
 
+	// FRRPeers were already validated as parseable addresses in c.Validate().
+	frrPeers := make([]netip.Addr, 0, len(c.Global.PCEP.FRRPeers))
+	for _, peer := range c.Global.PCEP.FRRPeers {
+		frrPeers = append(frrPeers, netip.MustParseAddr(peer))
+	}
+
 	// Start PCE server
 	o := &server.PCEOptions{
 		PCEPAddr:  c.Global.PCEP.Address,
@@ -103,6 +110,7 @@ func main() {
 		TEDEnable: c.Global.TED.Enable,
 		USidMode:  c.Global.USidMode,
 		ASN:       c.Global.TED.ASN,
+		FRRPeers:  frrPeers,
 	}
 	if serverErr := server.NewPCE(o, logger, tedElemsChan); serverErr.Error != nil {
 		logger.Panic("Failed to start new server", zap.String("server", serverErr.Server), zap.Error(serverErr.Error))

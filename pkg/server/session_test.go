@@ -588,6 +588,47 @@ func TestReceiveOpenSeparatesPccAndPolaCapabilities(t *testing.T) {
 	}
 }
 
+// forceFRR must override auto-detection: FRRouting advertises the same
+// capabilities as any other RFC-compliant PCC, so it cannot be told apart
+// from the OPEN message alone.
+func TestReceiveOpenForceFRROverridesDetection(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Errorf("failed to close server connection: %v", err)
+		}
+	})
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	// No capability hints at Cisco or Juniper, so auto-detection alone would
+	// classify this peer as RFCCompliant.
+	openMessage, err := pcep.NewOpenMessage(1, 30, nil)
+	if err != nil {
+		t.Fatalf("failed to create open message: %v", err)
+	}
+	byteOpenMessage, err := openMessage.Serialize()
+	if err != nil {
+		t.Fatalf("failed to serialize open message: %v", err)
+	}
+	if _, err := client.Write(byteOpenMessage); err != nil {
+		t.Fatalf("failed to write open message: %v", err)
+	}
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.forceFRR = true
+	if err := ss.ReceiveOpen(); err != nil {
+		t.Fatalf("ReceiveOpen returned an error: %v", err)
+	}
+
+	if ss.pccType != pcep.FRRoutingLegacy {
+		t.Errorf("pccType: got %v, want FRRoutingLegacy", ss.pccType)
+	}
+}
+
 func TestSweepExpiredSRPolicyIntents_RemovesExpired(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	ss.srPolicyIntentsMu.Lock()

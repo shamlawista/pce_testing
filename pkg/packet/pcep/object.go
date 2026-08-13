@@ -1647,6 +1647,13 @@ const (
 	CiscoLegacy PccType = iota
 	JuniperLegacy
 	RFCCompliant
+	// FRRoutingLegacy is RFC compliant on the wire (color/preference travel in the
+	// ASSOCIATION object) but, unlike RFCCompliant, also gets the Cisco-format
+	// VENDOR-INFORMATION blob on PCInitiate for older FRRouting builds that predate
+	// full RFC 9256 support. It cannot be auto-detected from the OPEN message (FRR
+	// advertises the same capabilities as any other RFC-compliant PCC), so it must
+	// be selected explicitly per peer (see PCEOptions.FRRPeers).
+	FRRoutingLegacy
 )
 
 // Determine PCC type from capability
