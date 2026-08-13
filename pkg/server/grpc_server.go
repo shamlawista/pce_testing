@@ -124,6 +124,8 @@ func enrichSRv6Segment(srv6Seg table.SegmentSRv6, segment *pb.Segment, usidMode 
 		}
 		srv6Seg.RemoteAddr = ra
 	}
+	srv6Seg.LocalInterfaceID = segment.GetLocalInterfaceId()
+	srv6Seg.RemoteInterfaceID = segment.GetRemoteInterfaceId()
 	return srv6Seg, nil
 }
 
@@ -143,6 +145,9 @@ func enrichSRMPLSSegment(mplsSeg table.SegmentSRMPLS, segment *pb.Segment) (tabl
 		}
 		mplsSeg.RemoteAddr = ra
 	}
+	mplsSeg.LocalInterfaceID = segment.GetLocalInterfaceId()
+	mplsSeg.RemoteInterfaceID = segment.GetRemoteInterfaceId()
+	mplsSeg.Unnumbered = segment.GetUnnumbered()
 	return mplsSeg, nil
 }
 
@@ -903,6 +908,8 @@ func convertSegment(seg table.Segment) *pb.Segment {
 		if len(v.Structure) == 4 {
 			pbSeg.SidStructure = fmt.Sprintf("%d,%d,%d,%d", v.Structure[0], v.Structure[1], v.Structure[2], v.Structure[3])
 		}
+		pbSeg.LocalInterfaceId = v.LocalInterfaceID
+		pbSeg.RemoteInterfaceId = v.RemoteInterfaceID
 	case table.SegmentSRMPLS:
 		if v.LocalAddr.IsValid() {
 			pbSeg.LocalAddr = v.LocalAddr.String()
@@ -910,6 +917,9 @@ func convertSegment(seg table.Segment) *pb.Segment {
 		if v.RemoteAddr.IsValid() {
 			pbSeg.RemoteAddr = v.RemoteAddr.String()
 		}
+		pbSeg.LocalInterfaceId = v.LocalInterfaceID
+		pbSeg.RemoteInterfaceId = v.RemoteInterfaceID
+		pbSeg.Unnumbered = v.Unnumbered
 	}
 	return pbSeg
 }

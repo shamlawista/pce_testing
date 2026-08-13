@@ -70,6 +70,12 @@ type Segment struct {
 	LocalAddr    string `yaml:"localAddr"`
 	RemoteAddr   string `yaml:"remoteAddr"`
 	SIDStructure string `yaml:"sidStructure"`
+	// Interface IDs for unnumbered / IPv6 link-local adjacency NAIs
+	// (RFC 8664 §4.3.1, NAI types 5 and 6).
+	LocalInterfaceID  uint32 `yaml:"localInterfaceId"`
+	RemoteInterfaceID uint32 `yaml:"remoteInterfaceId"`
+	// Selects NAI type 5 (Unnumbered Adjacency) instead of type 3 (IPv4 Adjacency).
+	Unnumbered bool `yaml:"unnumbered"`
 }
 
 type Waypoint struct {
@@ -168,10 +174,13 @@ func addSRPolicyWithEndpointAddr(input InputFormat, noSIDValidate bool) error {
 	segmentList := []*pb.Segment{}
 	for _, segment := range input.SRPolicy.SegmentList {
 		pbSeg := &pb.Segment{
-			Sid:          segment.SID,
-			LocalAddr:    segment.LocalAddr,
-			RemoteAddr:   segment.RemoteAddr,
-			SidStructure: segment.SIDStructure,
+			Sid:               segment.SID,
+			LocalAddr:         segment.LocalAddr,
+			RemoteAddr:        segment.RemoteAddr,
+			SidStructure:      segment.SIDStructure,
+			LocalInterfaceId:  segment.LocalInterfaceID,
+			RemoteInterfaceId: segment.RemoteInterfaceID,
+			Unnumbered:        segment.Unnumbered,
 		}
 		segmentList = append(segmentList, pbSeg)
 	}
@@ -316,10 +325,13 @@ func buildExplicitPolicy(
 	var segments []*pb.Segment
 	for _, s := range input.SRPolicy.SegmentList {
 		segments = append(segments, &pb.Segment{
-			Sid:          s.SID,
-			LocalAddr:    s.LocalAddr,
-			RemoteAddr:   s.RemoteAddr,
-			SidStructure: s.SIDStructure,
+			Sid:               s.SID,
+			LocalAddr:         s.LocalAddr,
+			RemoteAddr:        s.RemoteAddr,
+			SidStructure:      s.SIDStructure,
+			LocalInterfaceId:  s.LocalInterfaceID,
+			RemoteInterfaceId: s.RemoteInterfaceID,
+			Unnumbered:        s.Unnumbered,
 		})
 	}
 

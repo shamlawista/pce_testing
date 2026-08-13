@@ -44,5 +44,20 @@ func (x *SRPolicy) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 // Implements zapcore.ObjectMarshaler interface for Segment
 func (x *Segment) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	enc.AddString("SID", x.GetSid())
+	if localAddr := x.GetLocalAddr(); localAddr != "" {
+		enc.AddString("LocalAddr", localAddr)
+	}
+	if remoteAddr := x.GetRemoteAddr(); remoteAddr != "" {
+		enc.AddString("RemoteAddr", remoteAddr)
+	}
+	if x.GetUnnumbered() {
+		enc.AddBool("Unnumbered", true)
+	}
+	if localIfID := x.GetLocalInterfaceId(); localIfID != 0 {
+		enc.AddUint32("LocalInterfaceID", localIfID)
+	}
+	if remoteIfID := x.GetRemoteInterfaceId(); remoteIfID != 0 {
+		enc.AddUint32("RemoteInterfaceID", remoteIfID)
+	}
 	return nil
 }

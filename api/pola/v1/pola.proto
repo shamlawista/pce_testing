@@ -23,6 +23,19 @@ message Segment {
   string sid_structure = 2;
   string local_addr = 3;
   string remote_addr = 4;
+
+  // Interface IDs for unnumbered / link-local adjacency NAIs: SR-MPLS
+  // Unnumbered Adjacency and IPv6 link-local Adjacency (RFC 8664 §4.3.1,
+  // NAI types 5 and 6), and SRv6 link-local Adjacency (RFC 9603 §4.3.1,
+  // NAI type 6). Both must be set together with local_addr/remote_addr to
+  // select those NAI types.
+  uint32 local_interface_id = 5;
+  uint32 remote_interface_id = 6;
+
+  // Selects NAI type 5 (Unnumbered Adjacency with IPv4 Node IDs) instead of
+  // type 3 (IPv4 Adjacency) when local_addr/remote_addr are IPv4.
+  // Requires local_interface_id and remote_interface_id to be set.
+  bool unnumbered = 7;
 }
 
 enum SRPolicyType {

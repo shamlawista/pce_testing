@@ -32,6 +32,22 @@
             "type": "string",
             "pattern": "^[0-9]+,[0-9]+,[0-9]+,[0-9]+$",
             "description": "<locator-block>,<locator-node>,<function>,<argument>"
+        },
+        "localInterfaceId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "description": "Local interface ID for an SR-MPLS unnumbered or link-local adjacency NAI (RFC 8664 §4.3.1, types 5/6), or an SRv6 link-local adjacency NAI (RFC 9603 §4.3.1, type 6). Required together with remoteInterfaceId."
+        },
+        "remoteInterfaceId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "description": "Remote interface ID for an unnumbered or IPv6 link-local adjacency NAI. Required together with localInterfaceId."
+        },
+        "unnumbered": {
+            "type": "boolean",
+            "description": "Selects NAI type 5 (Unnumbered Adjacency with IPv4 Node IDs) instead of type 3 (IPv4 Adjacency) when localAddr/remoteAddr are IPv4. Requires localInterfaceId and remoteInterfaceId."
         }
     },
     "required": [

@@ -181,6 +181,11 @@ type SegmentSRv6 struct {
 	RemoteAddr netip.Addr        `json:"remoteAddr,omitzero"`
 	Structure  SIDStructureBytes `json:"sidStructure,omitempty"`
 	USid       bool              `json:"uSid,omitempty"`
+	// Interface IDs for a link-local IPv6 adjacency NAI (RFC 9603 §4.3.1,
+	// NAI type 6). Required together, and only meaningful when LocalAddr and
+	// RemoteAddr are both link-local.
+	LocalInterfaceID  uint32 `json:"localInterfaceId,omitempty"`
+	RemoteInterfaceID uint32 `json:"remoteInterfaceId,omitempty"`
 }
 
 func (seg SegmentSRv6) SidString() string {
@@ -252,6 +257,13 @@ type SegmentSRMPLS struct {
 	// Optional NAI for SR-ERO encoding (RFC 8664 §4.3.1).
 	LocalAddr  netip.Addr `json:"localAddr,omitzero"`
 	RemoteAddr netip.Addr `json:"remoteAddr,omitzero"`
+	// Interface IDs for the unnumbered (NAI type 5) and IPv6 link-local
+	// adjacency (NAI type 6) NAIs. Unnumbered selects type 5 over type 3
+	// when LocalAddr/RemoteAddr are IPv4; link-local NAI type is derived
+	// automatically when both addresses are link-local IPv6.
+	LocalInterfaceID  uint32 `json:"localInterfaceId,omitempty"`
+	RemoteInterfaceID uint32 `json:"remoteInterfaceId,omitempty"`
+	Unnumbered        bool   `json:"unnumbered,omitempty"`
 }
 
 func (seg SegmentSRMPLS) SidString() string {

@@ -79,6 +79,35 @@ func TestNewEnrichedSegmentSRMPLS(t *testing.T) {
 	}
 }
 
+// TestNewEnrichedSegmentSRMPLS_UnnumberedAndLinkLocal verifies that
+// interfaceId/unnumbered fields (RFC 8664 §4.3.1 NAI types 5 and 6) are
+// propagated from the gRPC Segment into table.SegmentSRMPLS.
+func TestNewEnrichedSegmentSRMPLS_UnnumberedAndLinkLocal(t *testing.T) {
+	unnumbered := &pb.Segment{
+		Sid: "24003", LocalAddr: "10.0.0.1", RemoteAddr: "10.0.0.2",
+		LocalInterfaceId: 5, RemoteInterfaceId: 7, Unnumbered: true,
+	}
+	seg, err := newEnrichedSegment(unnumbered, false)
+	require.NoError(t, err)
+	mplsSeg, ok := seg.(table.SegmentSRMPLS)
+	require.True(t, ok)
+	assert.True(t, mplsSeg.Unnumbered)
+	assert.Equal(t, uint32(5), mplsSeg.LocalInterfaceID)
+	assert.Equal(t, uint32(7), mplsSeg.RemoteInterfaceID)
+
+	linkLocal := &pb.Segment{
+		Sid: "24004", LocalAddr: "fe80::1", RemoteAddr: "fe80::2",
+		LocalInterfaceId: 3, RemoteInterfaceId: 9,
+	}
+	seg, err = newEnrichedSegment(linkLocal, false)
+	require.NoError(t, err)
+	mplsSeg, ok = seg.(table.SegmentSRMPLS)
+	require.True(t, ok)
+	assert.False(t, mplsSeg.Unnumbered)
+	assert.Equal(t, uint32(3), mplsSeg.LocalInterfaceID)
+	assert.Equal(t, uint32(9), mplsSeg.RemoteInterfaceID)
+}
+
 // TestNewEnrichedSegmentSRv6 verifies that SRv6 segment attributes are preserved.
 func TestNewEnrichedSegmentSRv6(t *testing.T) {
 	segment := &pb.Segment{
@@ -100,6 +129,21 @@ func TestNewEnrichedSegmentSRv6(t *testing.T) {
 		assert.Equal(t, table.SIDStructureBytes{32, 16, 0, 80}, srv6Seg.Structure, "Structure")
 		assert.Equalf(t, usidMode, srv6Seg.USid, "USid with usidMode=%v", usidMode)
 	}
+}
+
+// TestNewEnrichedSegmentSRv6_LinkLocal verifies that interfaceId fields
+// (RFC 9603 §4.3.1 NAI type 6) are propagated into table.SegmentSRv6.
+func TestNewEnrichedSegmentSRv6_LinkLocal(t *testing.T) {
+	segment := &pb.Segment{
+		Sid: "fc00:0:1::", LocalAddr: "fe80::1", RemoteAddr: "fe80::2",
+		LocalInterfaceId: 3, RemoteInterfaceId: 9,
+	}
+	seg, err := newEnrichedSegment(segment, false)
+	require.NoError(t, err)
+	srv6Seg, ok := seg.(table.SegmentSRv6)
+	require.True(t, ok)
+	assert.Equal(t, uint32(3), srv6Seg.LocalInterfaceID)
+	assert.Equal(t, uint32(9), srv6Seg.RemoteInterfaceID)
 }
 
 func TestNewEnrichedSegmentInvalidSID(t *testing.T) {
@@ -765,6 +809,21 @@ func TestConvertSegment_CarriesSRv6NAIAndStructure(t *testing.T) {
 	assert.Equal(t, "32,16,0,80", pbSeg.GetSidStructure())
 }
 
+// TestConvertSegment_SRv6LinkLocal verifies that a link-local SRv6 adjacency
+// segment (RFC 9603 §4.3.1 NAI type 6) round-trips its interface IDs out
+// through the gRPC API.
+func TestConvertSegment_SRv6LinkLocal(t *testing.T) {
+	seg := table.SegmentSRv6{
+		Sid: netip.MustParseAddr("fc00:0:1::"), LocalAddr: netip.MustParseAddr("fe80::1"), RemoteAddr: netip.MustParseAddr("fe80::2"),
+		LocalInterfaceID: 3, RemoteInterfaceID: 9,
+	}
+	pbSeg := convertSegment(seg)
+	assert.Equal(t, "fe80::1", pbSeg.GetLocalAddr())
+	assert.Equal(t, "fe80::2", pbSeg.GetRemoteAddr())
+	assert.Equal(t, uint32(3), pbSeg.GetLocalInterfaceId())
+	assert.Equal(t, uint32(9), pbSeg.GetRemoteInterfaceId())
+}
+
 func TestConvertSegment_SRMPLS(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -798,6 +857,23 @@ func TestConvertSegment_SRMPLS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConvertSegment_SRMPLSUnnumbered verifies that a segment decoded from an
+// unnumbered adjacency NAI (RFC 8664 §4.3.1 type 5) round-trips its interface
+// IDs and Unnumbered flag out through the gRPC API.
+func TestConvertSegment_SRMPLSUnnumbered(t *testing.T) {
+	seg := table.SegmentSRMPLS{
+		Sid: 24003, LocalAddr: netip.MustParseAddr("10.0.0.1"), RemoteAddr: netip.MustParseAddr("10.0.0.2"),
+		LocalInterfaceID: 5, RemoteInterfaceID: 7, Unnumbered: true,
+	}
+	pbSeg := convertSegment(seg)
+	assert.Equal(t, "24003", pbSeg.GetSid())
+	assert.Equal(t, "10.0.0.1", pbSeg.GetLocalAddr())
+	assert.Equal(t, "10.0.0.2", pbSeg.GetRemoteAddr())
+	assert.Equal(t, uint32(5), pbSeg.GetLocalInterfaceId())
+	assert.Equal(t, uint32(7), pbSeg.GetRemoteInterfaceId())
+	assert.True(t, pbSeg.GetUnnumbered())
 }
 
 // TestTED_ConcurrentUpdate verifies that TED reads and updates are synchronized.
