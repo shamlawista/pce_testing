@@ -592,6 +592,10 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 		return nil, errors.New("undefined pcc type")
 	}
 
+	if opts.skipAssociationDebug {
+		m.AssociationObject = nil
+	}
+
 	return m, nil
 }
 

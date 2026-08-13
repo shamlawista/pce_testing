@@ -1994,9 +1994,10 @@ func (o *VendorInformationObject) subTLVUint32(typ TLVType) uint32 {
 }
 
 type optParams struct {
-	pccType         PccType
-	originatorASN   uint32
-	includeColorTLV bool
+	pccType              PccType
+	originatorASN        uint32
+	includeColorTLV      bool
+	skipAssociationDebug bool
 }
 
 type Opt func(*optParams)
@@ -2016,6 +2017,17 @@ func VendorSpecific(pt PccType) Opt {
 func IncludeColorTLV(include bool) Opt {
 	return func(op *optParams) {
 		op.includeColorTLV = include
+	}
+}
+
+// SkipAssociationObjectDebug is a TEMPORARY diagnostic-only toggle: when true,
+// NewPCInitiateMessage omits the ASSOCIATION object entirely, to isolate
+// whether a peer's PCEP parser is rejecting the RFC 9862 SR Policy
+// association TLVs. Remove once the Nokia "malformed PCEP message" close is
+// root-caused.
+func SkipAssociationObjectDebug(skip bool) Opt {
+	return func(op *optParams) {
+		op.skipAssociationDebug = skip
 	}
 }
 

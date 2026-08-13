@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -718,7 +719,13 @@ func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error
 		return err
 	}
 
-	pcinitiateMessage, err := pcep.NewPCInitiateMessage(srpID, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType), pcep.OriginatorASN(ss.asn), pcep.IncludeColorTLV(ss.peerHasColorCapability()))
+	// TEMPORARY diagnostic toggle for the Nokia "malformed PCEP message" investigation:
+	// POLA_DEBUG_NO_ASSOCIATION=1 omits the ASSOCIATION object from PCInitiate so we can
+	// isolate whether a peer's parser is choking on the RFC 9862 SR Policy association
+	// TLVs. Remove once root-caused.
+	skipAssociation := os.Getenv("POLA_DEBUG_NO_ASSOCIATION") == "1"
+
+	pcinitiateMessage, err := pcep.NewPCInitiateMessage(srpID, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType), pcep.OriginatorASN(ss.asn), pcep.IncludeColorTLV(ss.peerHasColorCapability()), pcep.SkipAssociationObjectDebug(skipAssociation))
 	if err != nil {
 		ss.forgetSRPolicyIntent(srpID)
 		return err
