@@ -1,0 +1,26 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.out
+*.so
+
+# Python
+*.pyc
+*.pyo
+__pycache__/
+*.pyproj
+
+# Hugo
+.hugo_build.lock
+themes/
+
+# Other
+.DS_Store
+*.swp
+
+# Binaries (Go build artifacts)
+cmd/pola/pola
+cmd/polad/polad
+bin/*
