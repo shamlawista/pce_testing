@@ -167,6 +167,32 @@ func TestSRPolicies_SnapshotSRv6StructureIsIndependent(t *testing.T) {
 	}
 }
 
+// SearchPlspIDByName must match on name alone. Both policies here share the
+// same (zeroed) Color and DstAddr - the exact situation a PCC that never
+// echoes color back (e.g. Nokia SR OS) produces for every policy it reports -
+// so a Color/DstAddr-keyed lookup would be unable to tell them apart.
+func TestSearchPlspIDByName(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+
+	dst := netip.MustParseAddr("213.119.192.225")
+	ss.srPolicies = append(ss.srPolicies,
+		table.NewSRPolicy(371, "clean-test-1786637173", nil, netip.MustParseAddr("213.119.192.12"), dst, 0, 0, 0, table.PolicyUp),
+		table.NewSRPolicy(384, "clean-test-2-nai", nil, netip.MustParseAddr("213.119.192.12"), dst, 0, 0, 0, table.PolicyUp),
+	)
+
+	id, found := ss.SearchPlspIDByName("clean-test-2-nai")
+	if !found {
+		t.Fatal("expected to find clean-test-2-nai")
+	}
+	if id != 384 {
+		t.Errorf("PlspID: got %d, want 384", id)
+	}
+
+	if _, found := ss.SearchPlspIDByName("does-not-exist"); found {
+		t.Error("expected no match for a name that was never registered")
+	}
+}
+
 func TestSRPolicyIntent_AttachedOnCreationBySRPID(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	sr := newTestStateReport(t, 1, 7)

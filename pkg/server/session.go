@@ -918,12 +918,20 @@ func (ss *Session) SearchSRPolicy(plspID uint32) (*table.SRPolicy, bool) {
 	return ss.searchSRPolicyLocked(plspID)
 }
 
-// SearchPlspID returns the PLSP-ID of a registered SR Policy, along with a boolean value indicating if it was found.
-func (ss *Session) SearchPlspID(color uint32, endpoint netip.Addr) (uint32, bool) {
+// SearchPlspIDByName returns the PLSP-ID of a registered SR Policy matching
+// name, along with a boolean value indicating if it was found. Matching by
+// name (the PCEP SYMBOLIC-PATH-NAME TLV) rather than by color is deliberate:
+// color is only ever known locally for as long as the PCC keeps re-affirming
+// it in each PCRpt (see resolveColorPreference), and PCCs that don't echo it
+// back (observed with Nokia SR OS, which doesn't advertise ColorCapability
+// and may omit the ASSOCIATION object from PCRpt) leave the stored Color
+// permanently at 0 - silently breaking both update-vs-create correlation in
+// sendSRPolicyRequest and delete lookups.
+func (ss *Session) SearchPlspIDByName(name string) (uint32, bool) {
 	ss.srPoliciesMu.RLock()
 	defer ss.srPoliciesMu.RUnlock()
 	for _, v := range ss.srPolicies {
-		if v.Color == color && v.DstAddr == endpoint {
+		if v.Name == name {
 			return v.PlspID, true
 		}
 	}

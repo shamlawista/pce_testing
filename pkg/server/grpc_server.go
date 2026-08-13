@@ -281,7 +281,7 @@ func sendSRPolicyRequest(s *APIServer, input *pb.CreateSRPolicyRequest, segmentL
 		Metric:      metricType,
 	}
 
-	if id, exists := pcepSession.SearchPlspID(inputSRPolicy.GetColor(), dstAddr); exists {
+	if id, exists := pcepSession.SearchPlspIDByName(inputSRPolicy.GetPolicyName()); exists {
 		s.logger.Debug("Request to update SR Policy", zap.Uint32("plspID", id))
 		srPolicy.PlspID = id
 		if err := pcepSession.SendPCUpdate(srPolicy); err != nil {
@@ -433,7 +433,7 @@ func (s *APIServer) DeleteSRPolicy(ctx context.Context, input *pb.DeleteSRPolicy
 		Preference:  100,
 	}
 
-	if id, exists := pcepSession.SearchPlspID(inputSRPolicy.GetColor(), dstAddr); exists {
+	if id, exists := pcepSession.SearchPlspIDByName(inputSRPolicy.GetPolicyName()); exists {
 		s.logger.Debug("Request to delete SR Policy", zap.Uint32("plspID", id))
 		srPolicy.PlspID = id
 
