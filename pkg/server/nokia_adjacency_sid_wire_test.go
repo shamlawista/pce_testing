@@ -6,7 +6,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -22,6 +21,30 @@ import (
 	pb "github.com/nttcom/pola/api/pola/v1"
 	"github.com/nttcom/pola/pkg/packet/pcep"
 )
+
+// eroObjectClass is the PCEP object class for the ERO object (RFC 5440 §7.9).
+const eroObjectClass = 7
+
+// findObjectBody walks the common object headers in body (RFC 5440 §7.2) and
+// returns the body (excluding the 4-byte header) of the first object whose
+// class matches wantClass. It fails the test if no such object is found or
+// if an object's declared length would run past the end of body.
+func findObjectBody(t *testing.T, body []byte, wantClass byte) []byte {
+	t.Helper()
+	off := 0
+	for off+4 <= len(body) {
+		objClass := body[off]
+		objLen := int(binary.BigEndian.Uint16(body[off+2 : off+4]))
+		require.GreaterOrEqualf(t, objLen, 4, "object at offset %d has invalid length %d", off, objLen)
+		require.LessOrEqualf(t, off+objLen, len(body), "object at offset %d (length %d) runs past end of body: %x", off, objLen, body)
+		if objClass == wantClass {
+			return body[off+4 : off+objLen]
+		}
+		off += objLen
+	}
+	require.Failf(t, "object not found", "no object with class %d found in body: %x", wantClass, body)
+	return nil
+}
 
 // TestCreateSRPolicy_PushesAdjacencySIDWireBytes verifies the full
 // encode/push direction end-to-end through the real gRPC entry point used by
@@ -108,13 +131,15 @@ func TestCreateSRPolicy_PushesAdjacencySIDWireBytes(t *testing.T) {
 			_, err = io.ReadFull(client, body)
 			require.NoError(t, err, "failed to read PCEP message body")
 
-			// Locate the SR-ERO subobject (Type 0x24) within the message body and
-			// confirm its NAI-type nibble and NAI bytes match RFC 8664 §4.3.1 exactly.
-			idx := bytes.IndexByte(body, 0x24)
-			require.GreaterOrEqualf(t, idx, 0, "SR-ERO subobject (type 0x24) not found in message body: %x", body)
-			require.GreaterOrEqual(t, len(body), idx+3, "message body truncated before NAI-type byte")
+			// Locate the ERO object (PCEP object class 7) by walking the common
+			// object headers, rather than scanning for a bare 0x24 byte: that type
+			// byte can coincidentally recur elsewhere (e.g. inside an object length
+			// field), so a naive search risks matching the wrong offset.
+			eroBody := findObjectBody(t, body, eroObjectClass)
+			require.GreaterOrEqual(t, len(eroBody), 3, "ERO object body truncated before NAI-type byte")
+			require.Equal(t, uint8(0x24), eroBody[0]&0x7f, "expected the SR-ERO subobject (type 0x24) at the start of the ERO body: %x", eroBody)
 
-			gotNAI := body[idx+2] >> 4
+			gotNAI := eroBody[2] >> 4
 			assert.Equalf(t, tc.wantNAI, gotNAI, "NAI type mismatch in wire bytes: %x", body)
 
 			assert.Containsf(t, hex.EncodeToString(body), tc.wantNAIHex, "expected NAI bytes not found in wire message: %x", body)

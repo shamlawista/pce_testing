@@ -50,7 +50,7 @@ type Session struct {
 	logger                  *zap.Logger
 	keepAlive               uint8
 	pccType                 pcep.PccType
-	forceFRR                bool // set by the server before Established() if this peer is listed under PCEOptions.FRRPeers.
+	forceFRR                bool                       // set by the server before Established() if this peer is listed under PCEOptions.FRRPeers.
 	advertisedCapabilities  []pcep.CapabilityInterface // Capabilities Pola advertises to the PCC.
 	receivedPccCapabilities []pcep.CapabilityInterface // Capabilities received from the PCC.
 	ted                     *table.LsTED
@@ -718,7 +718,7 @@ func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error
 		return err
 	}
 
-	pcinitiateMessage, err := pcep.NewPCInitiateMessage(srpID, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType), pcep.OriginatorASN(ss.asn))
+	pcinitiateMessage, err := pcep.NewPCInitiateMessage(srpID, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType), pcep.OriginatorASN(ss.asn), pcep.IncludeColorTLV(ss.peerHasColorCapability()))
 	if err != nil {
 		ss.forgetSRPolicyIntent(srpID)
 		return err
@@ -767,6 +767,17 @@ func (ss *Session) RegisterSRPolicy(sr pcep.StateReport) error {
 	return ss.updateOrCreatePolicy(sr, segmentList, color, preference, state)
 }
 
+// peerHasColorCapability reports whether the peer's OPEN message advertised
+// the Color Capability bit in its Stateful PCE Capability TLV.
+func (ss *Session) peerHasColorCapability() bool {
+	for _, cap := range ss.receivedPccCapabilities {
+		if c, ok := cap.(*pcep.StatefulPCECapability); ok && c.ColorCapability {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveColorPreference returns the color and preference for the SR Policy
 func (ss *Session) resolveColorPreference(sr *pcep.StateReport) (uint32, uint32) {
 	var color, preference uint32
@@ -776,14 +787,7 @@ func (ss *Session) resolveColorPreference(sr *pcep.StateReport) (uint32, uint32)
 		color = sr.VendorInformationObject.Color()
 		preference = sr.VendorInformationObject.Preference()
 	} else {
-		// Check if PCC supports color capability
-		hasColor := false
-		for _, cap := range ss.receivedPccCapabilities {
-			if c, ok := cap.(*pcep.StatefulPCECapability); ok && c.ColorCapability {
-				hasColor = true
-				break
-			}
-		}
+		hasColor := ss.peerHasColorCapability()
 
 		// SR Policy Association color takes precedence
 		if c := sr.AssociationObject.Color(); c != 0 {

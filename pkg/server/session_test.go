@@ -629,6 +629,84 @@ func TestReceiveOpenForceFRROverridesDetection(t *testing.T) {
 	}
 }
 
+// SendPCInitiate must only attach the LSP object's Color TLV
+// (draft-ietf-pce-pcep-color / RFC 9863) when the peer's OPEN advertised the
+// Color Capability bit. Some real PCCs (e.g. Nokia SR OS) do not advertise
+// it and are not guaranteed to tolerate an unrecognized TLV there.
+func TestSendPCInitiate_ColorTLVGatedOnCapability(t *testing.T) {
+	cases := map[string]struct {
+		caps    []pcep.CapabilityInterface
+		wantTLV bool
+	}{
+		"ColorCapabilityAdvertised": {
+			caps:    []pcep.CapabilityInterface{&pcep.StatefulPCECapability{ColorCapability: true}},
+			wantTLV: true,
+		},
+		"ColorCapabilityNotAdvertised": {
+			caps:    []pcep.CapabilityInterface{&pcep.StatefulPCECapability{ColorCapability: false}},
+			wantTLV: false,
+		},
+		"NoCapabilitiesReceived": {
+			caps:    nil,
+			wantTLV: false,
+		},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			server, client := newTCPConnPair(t)
+			t.Cleanup(func() {
+				_ = client.Close()
+			})
+
+			ss := NewSession(1, netip.MustParseAddr("213.119.192.12"), server, zap.NewNop(), nil, 0)
+			ss.isSynced = true
+			ss.receivedPccCapabilities = tt.caps
+
+			srPolicy := table.SRPolicy{
+				Name:        "color-gating-test",
+				SegmentList: []table.Segment{table.NewSegmentSRMPLS(524044)},
+				SrcAddr:     netip.MustParseAddr("213.119.192.12"),
+				DstAddr:     netip.MustParseAddr("213.119.192.10"),
+				Color:       200,
+				Preference:  100,
+			}
+
+			if err := ss.SendPCInitiate(srPolicy, false); err != nil {
+				t.Fatalf("SendPCInitiate failed: %v", err)
+			}
+
+			if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatalf("failed to set read deadline: %v", err)
+			}
+			header := make([]byte, pcep.CommonHeaderLength)
+			if _, err := io.ReadFull(client, header); err != nil {
+				t.Fatalf("failed to read PCEP common header: %v", err)
+			}
+			var ch pcep.CommonHeader
+			if err := ch.DecodeFromBytes(header); err != nil {
+				t.Fatalf("failed to decode common header: %v", err)
+			}
+			bodyLen := int(ch.MessageLength) - int(pcep.CommonHeaderLength)
+			body := make([]byte, bodyLen)
+			if _, err := io.ReadFull(client, body); err != nil {
+				t.Fatalf("failed to read PCEP message body: %v", err)
+			}
+
+			gotTLV := false
+			for i := 0; i+4 <= len(body); i++ {
+				if body[i] == 0x00 && body[i+1] == 0x43 && body[i+2] == 0x00 && body[i+3] == 0x04 {
+					gotTLV = true
+					break
+				}
+			}
+			if gotTLV != tt.wantTLV {
+				t.Errorf("Color TLV present on wire: got %v, want %v (body: %x)", gotTLV, tt.wantTLV, body)
+			}
+		})
+	}
+}
+
 func TestSweepExpiredSRPolicyIntents_RemovesExpired(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	ss.srPolicyIntentsMu.Lock()

@@ -529,11 +529,17 @@ func (m *PCInitiateMessage) Serialize() ([]uint8, error) {
 
 func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID uint32, segmentList []table.Segment, color uint32, preference uint32, srcAddr netip.Addr, dstAddr netip.Addr, opt ...Opt) (*PCInitiateMessage, error) {
 	opts := optParams{
-		pccType: RFCCompliant,
+		pccType:         RFCCompliant,
+		includeColorTLV: true,
 	}
 
 	for _, o := range opt {
 		o(&opts)
+	}
+
+	var colorArg *uint32
+	if opts.includeColorTLV {
+		colorArg = &color
 	}
 
 	m := &PCInitiateMessage{}
@@ -544,13 +550,13 @@ func NewPCInitiateMessage(srpID uint32, lspName string, lspDelete bool, plspID u
 	}
 
 	if lspDelete {
-		if m.LSPObject, err = NewLSPObject(lspName, &color, plspID); err != nil {
+		if m.LSPObject, err = NewLSPObject(lspName, colorArg, plspID); err != nil {
 			return nil, err
 		}
 		return m, nil
 	}
 
-	if m.LSPObject, err = NewLSPObject(lspName, &color, 0); err != nil {
+	if m.LSPObject, err = NewLSPObject(lspName, colorArg, 0); err != nil {
 		return nil, err
 	}
 	if m.EndpointsObject, err = NewEndpointsObject(dstAddr, srcAddr); err != nil {

@@ -122,6 +122,53 @@ func TestNewPCInitiateMessage_OriginatorASNReachesWire(t *testing.T) {
 	}
 }
 
+// IncludeColorTLV(false) must omit the LSP object's Color TLV (draft-ietf-pce-pcep-color
+// / RFC 9863) entirely; peers that never advertised the Color Capability bit
+// may not tolerate an unrecognized TLV there.
+func TestNewPCInitiateMessage_ColorTLVGating(t *testing.T) {
+	t.Parallel()
+
+	srcAddr := netip.MustParseAddr("192.0.2.1")
+	dstAddr := netip.MustParseAddr("192.0.2.2")
+	segmentList := []table.Segment{table.NewSegmentSRMPLS(16001)}
+
+	cases := map[string]struct {
+		opts    []Opt
+		wantTLV bool
+	}{
+		"CapabilityAdvertised":    {opts: []Opt{VendorSpecific(RFCCompliant), IncludeColorTLV(true)}, wantTLV: true},
+		"CapabilityNotAdvertised": {opts: []Opt{VendorSpecific(RFCCompliant), IncludeColorTLV(false)}, wantTLV: false},
+		"DefaultOmitted":          {opts: []Opt{VendorSpecific(RFCCompliant)}, wantTLV: true},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			m, err := NewPCInitiateMessage(1, "policy1", false, 0, segmentList, 100, 200, srcAddr, dstAddr, tt.opts...)
+			require.NoError(t, err, "NewPCInitiateMessage failed")
+
+			var gotColor *Color
+			for _, tlv := range m.LSPObject.TLVs {
+				if c, ok := tlv.(*Color); ok {
+					gotColor = c
+					break
+				}
+			}
+			if tt.wantTLV {
+				require.NotNil(t, gotColor, "expected Color TLV in LSP object")
+				assert.Equal(t, uint32(100), gotColor.Color)
+			} else {
+				assert.Nil(t, gotColor, "Color TLV should be omitted from the LSP object")
+			}
+
+			raw, err := m.Serialize()
+			require.NoError(t, err, "Serialize failed")
+			assert.Equal(t, tt.wantTLV, bytes.Contains(raw, []byte{0x00, 0x43, 0x00, 0x04}), "Color TLV presence on the wire does not match expectation")
+		})
+	}
+}
+
 // Verify object selection for each PccType.
 func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 	t.Parallel()

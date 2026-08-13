@@ -1994,8 +1994,9 @@ func (o *VendorInformationObject) subTLVUint32(typ TLVType) uint32 {
 }
 
 type optParams struct {
-	pccType       PccType
-	originatorASN uint32
+	pccType         PccType
+	originatorASN   uint32
+	includeColorTLV bool
 }
 
 type Opt func(*optParams)
@@ -2003,6 +2004,18 @@ type Opt func(*optParams)
 func VendorSpecific(pt PccType) Opt {
 	return func(op *optParams) {
 		op.pccType = pt
+	}
+}
+
+// IncludeColorTLV controls whether NewPCInitiateMessage attaches the LSP
+// object's Color TLV (draft-ietf-pce-pcep-color / RFC 9863). Peers that
+// never advertised the Color Capability bit in their OPEN message may not
+// recognize this TLV; RFC 5440 §7.1 requires unrecognized TLVs to be
+// silently ignored, but not every PCEP implementation honors that, so
+// callers should pass false unless the peer has advertised the capability.
+func IncludeColorTLV(include bool) Opt {
+	return func(op *optParams) {
+		op.includeColorTLV = include
 	}
 }
 
