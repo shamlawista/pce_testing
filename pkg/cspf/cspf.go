@@ -130,7 +130,11 @@ func spf(srcRouterID string, dstRouterID string, metricType table.MetricType, ne
 	for {
 		calcNodeID, err := nextNode(calculatingNodes)
 		if err != nil {
-			return nil, err
+			// The frontier is exhausted without ever reaching dstRouterID: every
+			// remaining candidate was either already calculated or pruned (e.g.
+			// non-SR-capable neighbors in updateNeighborCosts). That means no
+			// all-SR-MPLS path exists to the destination.
+			return nil, fmt.Errorf("no SR-MPLS path found from %s to %s", srcRouterID, dstRouterID)
 		}
 		if calcNodeID == dstRouterID {
 			break
@@ -171,9 +175,12 @@ func updateNeighborCosts(calcNodeID string, calculatingNodes map[string]*node, n
 				remoteNode.prevNode = calcNodeID
 			}
 		} else {
+			// A neighbor without a Node SID isn't usable as an SR-MPLS transit
+			// hop. Prune it from the graph rather than aborting the whole
+			// computation - it may not even be needed for the shortest SR path.
 			remoteNodeSeg, err := link.RemoteNode.NodeSegment()
 			if err != nil {
-				return err
+				continue
 			}
 			remoteNode := newNode(link.RemoteNode.RouterID, calculatingNodes[calcNodeID].cost+metric, remoteNodeSeg)
 			remoteNode.prevNode = calcNodeID
