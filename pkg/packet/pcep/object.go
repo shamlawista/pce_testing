@@ -454,6 +454,60 @@ func NewPCEPErrorObject(errorType uint8, errorValue uint8, tlvs []TLVInterface) 
 	return o, nil
 }
 
+// NOTIFICATION Object (RFC5440 7.14). Same body layout as PCEP-ERROR (7.15):
+// Reserved(1) + Flags(1) + Notification-Type(1) + Notification-Value(1) + TLVs.
+const (
+	ObjectTypeNotificationNotification ObjectType = 0x01
+)
+
+// notificationDescriptions maps Notification-Type to its known
+// Notification-Values, per the IANA PCEP Notification-Type/Notification-Value
+// registries (RFC5440 SS9.12/9.13, see
+// https://www.iana.org/assignments/pcep/pcep.xhtml).
+var notificationDescriptions = map[uint8]map[uint8]string{
+	1: { // Pending Request cancelled
+		1: "PCC cancels a set of pending requests",
+		2: "PCE cancels a set of pending requests",
+	},
+	2: { // PCE Congestion
+		1: "PCE currently in congested state",
+		2: "PCE no longer in congested state",
+	},
+}
+
+type NotificationObject struct {
+	ObjectType        ObjectType
+	NotificationType  uint8
+	NotificationValue uint8
+	Tlvs              []TLVInterface
+}
+
+func (o *NotificationObject) DecodeFromBytes(typ ObjectType, objectBody []uint8) error {
+	if len(objectBody) < 4 {
+		return fmt.Errorf("NOTIFICATION object body too short: got %d bytes, need at least 4", len(objectBody))
+	}
+	o.ObjectType = typ
+	o.NotificationType = objectBody[2]
+	o.NotificationValue = objectBody[3]
+	if len(objectBody) > 4 {
+		var err error
+		if o.Tlvs, err = DecodeTLVs(objectBody[4:]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Description renders the Notification-Type/Notification-Value pair
+// human-readably, falling back to the raw numeric values for any combination
+// not in the IANA registry this code knows about.
+func (o *NotificationObject) Description() string {
+	if desc, ok := notificationDescriptions[o.NotificationType][o.NotificationValue]; ok {
+		return fmt.Sprintf("%s (NT=%d, NV=%d)", desc, o.NotificationType, o.NotificationValue)
+	}
+	return fmt.Sprintf("Unknown Notification (NT=%d, NV=%d)", o.NotificationType, o.NotificationValue)
+}
+
 // Close Object (RFC5440 7.17)
 const (
 	ObjectTypeCloseClose ObjectType = 0x01

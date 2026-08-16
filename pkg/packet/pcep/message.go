@@ -278,6 +278,52 @@ func NewPCErrMessage(errorType uint8, errorValue uint8, tlvs []TLVInterface) (*P
 	return m, nil
 }
 
+// Notification Message (RFC5440 6.9). This PCE never originates PCNtf
+// messages, only receives them (e.g. Nokia SR OS reporting a cancelled
+// pending request), so only decoding is implemented.
+type NotificationMessage struct {
+	Notifications []*NotificationObject
+}
+
+// DecodeFromBytes walks the message body object-by-object, same framing
+// approach as PCErrMessage.DecodeFromBytes. RFC5440 6.9's grammar allows a
+// leading RP object per notify-request (<notify-request> ::= [<RP-list>]
+// <NOTIFICATION-list>); RP isn't decoded here since nothing in this PCE
+// consumes it, but it - and any other unrecognized object class - is still
+// stepped over by its declared ObjectLength so the stream stays aligned.
+func (m *NotificationMessage) DecodeFromBytes(messageBody []uint8) error {
+	for offset := 0; offset < len(messageBody); {
+		if len(messageBody)-offset < int(commonObjectHeaderLength) {
+			return fmt.Errorf("Notification: truncated object header at offset %d", offset)
+		}
+		var commonObjectHeader CommonObjectHeader
+		if err := commonObjectHeader.DecodeFromBytes(messageBody[offset : offset+int(commonObjectHeaderLength)]); err != nil {
+			return err
+		}
+		if commonObjectHeader.ObjectLength < commonObjectHeaderLength || commonObjectHeader.ObjectLength%4 != 0 {
+			return fmt.Errorf("Notification: invalid object length %d at offset %d", commonObjectHeader.ObjectLength, offset)
+		}
+		end := offset + int(commonObjectHeader.ObjectLength)
+		if end > len(messageBody) {
+			return fmt.Errorf("Notification: object body extends past message (offset=%d, len=%d, total=%d)",
+				offset, commonObjectHeader.ObjectLength, len(messageBody))
+		}
+
+		if commonObjectHeader.ObjectClass == ObjectClassNotification {
+			notifObj := &NotificationObject{}
+			if err := notifObj.DecodeFromBytes(commonObjectHeader.ObjectType, messageBody[offset+int(commonObjectHeaderLength):end]); err != nil {
+				return err
+			}
+			m.Notifications = append(m.Notifications, notifObj)
+		}
+		offset = end
+	}
+	if len(m.Notifications) == 0 {
+		return errors.New("Notification: message carries no NOTIFICATION object")
+	}
+	return nil
+}
+
 // Close Message
 type CloseMessage struct {
 	CloseObject *CloseObject

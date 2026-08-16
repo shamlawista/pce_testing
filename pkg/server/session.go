@@ -375,9 +375,39 @@ func (ss *Session) ReceivePCEPMessage() error {
 				zap.String("detail", "See https://www.iana.org/assignments/pcep/pcep.xhtml#close-object-reason-field"))
 			// Close session if get Close Message
 			return nil
+		case pcep.MessageTypeNotification:
+			byteNotificationMessageBody := make([]uint8, commonHeader.MessageLength-pcep.CommonHeaderLength)
+			if _, err := ss.tcpConn.Read(byteNotificationMessageBody); err != nil {
+				return err
+			}
+			notificationMessage := &pcep.NotificationMessage{}
+			// The body is already fully consumed above regardless of decode
+			// outcome, so the stream stays aligned even if this fails - log and
+			// move on instead of tearing down an otherwise-healthy session over
+			// a message this PCE only observes informationally.
+			if err := notificationMessage.DecodeFromBytes(byteNotificationMessageBody); err != nil {
+				ss.logger.Warn("Received malformed Notification message, ignoring", zap.Error(err))
+				continue
+			}
+			for _, notif := range notificationMessage.Notifications {
+				ss.logger.Debug("Received Notification", zap.String("notification", notif.Description()))
+			}
 		default:
 			ss.logger.Debug("Received unsupported MessageType",
 				zap.String("MessageType", commonHeader.MessageType.String()))
+			// Read and discard this message's body even though we don't have a
+			// dedicated handler for its type: MessageLength is known from the
+			// common header regardless of type, and skipping this leaves the
+			// body's bytes unread. The next readCommonHeader() call then misreads
+			// bytes from the middle of this message's body as a bogus header,
+			// desyncing the parser for several reads until it drifts back into
+			// alignment by chance - see the PCNtf desync this was written for.
+			if bodyLength := commonHeader.MessageLength - pcep.CommonHeaderLength; bodyLength > 0 {
+				discard := make([]uint8, bodyLength)
+				if _, err := ss.tcpConn.Read(discard); err != nil {
+					return err
+				}
+			}
 		}
 	}
 }
