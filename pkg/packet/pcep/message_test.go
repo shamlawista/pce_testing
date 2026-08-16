@@ -299,6 +299,45 @@ func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
 	}
 }
 
+// TestNotificationMessage_DecodeFromBytes mirrors a real Nokia SR OS PCNtf
+// capture: a leading RP object (not decoded by this PCE, just skipped by its
+// declared ObjectLength) followed by a NOTIFICATION object reporting NT=1/
+// NV=1 ("PCC cancels a set of pending requests"). NotificationObject has no
+// Serialize()/Len() (this PCE only ever receives, never sends, PCNtf), so
+// unlike the round-trip tests above this hand-builds the wire bytes.
+func TestNotificationMessage_DecodeFromBytes(t *testing.T) {
+	t.Parallel()
+
+	rpHeader := NewCommonObjectHeader(ObjectClassRP, ObjectType(1), 12)
+	rpBytes := AppendByteSlices(rpHeader.Serialize(), make([]uint8, 8))
+
+	notifHeader := NewCommonObjectHeader(ObjectClassNotification, ObjectTypeNotificationNotification, 8)
+	notifBytes := AppendByteSlices(notifHeader.Serialize(), []uint8{0, 0, 1, 1}) // Reserved, Flags, NT=1, NV=1
+
+	messageBody := AppendByteSlices(rpBytes, notifBytes)
+
+	var m NotificationMessage
+	require.NoError(t, m.DecodeFromBytes(messageBody), "DecodeFromBytes failed")
+	require.Len(t, m.Notifications, 1, "expected exactly one NOTIFICATION object; the RP object must be skipped, not decoded")
+	assert.Equal(t, uint8(1), m.Notifications[0].NotificationType)
+	assert.Equal(t, uint8(1), m.Notifications[0].NotificationValue)
+	assert.Equal(t, "PCC cancels a set of pending requests (NT=1, NV=1)", m.Notifications[0].Description())
+}
+
+// TestNotificationMessage_DecodeFromBytes_NoNotificationObject confirms an
+// RP-only body (no NOTIFICATION object at all) is a clean decode error
+// rather than silently accepted, mirroring PCErrMessage's "no error object"
+// guard for the analogous malformed case.
+func TestNotificationMessage_DecodeFromBytes_NoNotificationObject(t *testing.T) {
+	t.Parallel()
+
+	rpHeader := NewCommonObjectHeader(ObjectClassRP, ObjectType(1), 12)
+	messageBody := AppendByteSlices(rpHeader.Serialize(), make([]uint8, 8))
+
+	var m NotificationMessage
+	assert.Error(t, m.DecodeFromBytes(messageBody))
+}
+
 // objectClassSequence walks the common object headers in body (RFC 5440 §7.2)
 // and returns the ObjectClass of each object in wire order.
 func objectClassSequence(t *testing.T, body []byte) []ObjectClass {
