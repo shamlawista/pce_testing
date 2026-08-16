@@ -35,6 +35,17 @@ and re-add each one whose destination is still a valid mesh endpoint. A
 policy whose destination dropped out of the SR-capable set (or its session
 went down) is left in place and logged as stale, not deleted or retried.
 
+`add` returning success only means polad sent the PCUpd -- SendPCUpdate
+(pkg/server/session.go) returns as soon as the message is on the wire, it
+does not wait for the router's PCRpt. So `sr-policy list` can still show the
+pre-update path for a moment after a successful `add` call. This daemon
+polls for the change (--confirm-timeout, default 10s) before logging the
+reoptimize event or comparing against the prediction, rather than trusting
+a single immediate re-fetch -- an earlier version compared the stale
+pre-update value and both mislogged the "old -> new" transition and raised
+false "cspf_replica.py may have drifted" warnings on every legitimate
+reoptimization.
+
 Usage:
     python3 sr_mesh_reoptimize.py --port 50052
     python3 sr_mesh_reoptimize.py --port 50052 --once   # single pass, for testing
@@ -85,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=6.0,
         help="seconds to wait after a trigger before checking, to clear GoBGP's BGP-LS debounce (default: 6)",
+    )
+    p.add_argument(
+        "--confirm-timeout",
+        type=float,
+        default=10.0,
+        help="seconds to poll sr-policy list for the router's PCRpt after a reoptimize before giving up (default: 10)",
     )
     p.add_argument(
         "--polad-log",
@@ -205,9 +222,19 @@ def run_cycle(cli: PolaCLI, args: argparse.Namespace, last_fingerprint: str | No
                 errors += 1
                 continue
 
-            new_segments = _fetch_segment_list(cli, peer_addr, name)
-            new_sids = [seg.get("sid") for seg in new_segments] if new_segments is not None else None
-            if new_sids is not None and new_sids != predicted_sids:
+            # add() returns as soon as polad sends the PCUpd -- it does not wait
+            # for the router's PCRpt (pkg/server/session.go: SendPCUpdate returns
+            # right after sendPCEPMessage). sr-policy list only reflects the new
+            # path once that PCRpt round-trip lands, so poll briefly instead of
+            # trusting a single immediate re-fetch.
+            new_sids = _await_installed_change(cli, peer_addr, name, old_sids, args.confirm_timeout)
+            if new_sids is None:
+                log.warning(
+                    "%-40s on %s: still showed the pre-update path %s after waiting %.0fs for the router's "
+                    "PCRpt -- update may just be slow, or it silently didn't take; verify manually",
+                    name, peer_addr, old_sids, args.confirm_timeout,
+                )
+            elif new_sids != predicted_sids:
                 log.warning(
                     "%-40s on %s: polad's installed path %s differs from this script's prediction %s "
                     "-- cspf_replica.py may have drifted from pkg/cspf/cspf.go, please check",
@@ -234,6 +261,25 @@ def _fetch_segment_list(cli: PolaCLI, peer_addr: str, name: str) -> list | None:
             if pol.get("policyName") == name:
                 return pol.get("segmentList", [])
     return None
+
+
+_CONFIRM_POLL_INTERVAL = 0.5
+
+
+def _await_installed_change(cli: PolaCLI, peer_addr: str, name: str, old_sids: list, timeout: float) -> list | None:
+    """Poll sr-policy list until the installed segment list moves away from
+    old_sids (the router's PCRpt for the just-sent PCUpd has landed), or the
+    timeout is hit. Returns the new SID list, or None if it never changed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        segments = _fetch_segment_list(cli, peer_addr, name)
+        if segments is not None:
+            sids = [seg.get("sid") for seg in segments]
+            if sids != old_sids:
+                return sids
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_CONFIRM_POLL_INTERVAL)
 
 
 def main() -> None:
