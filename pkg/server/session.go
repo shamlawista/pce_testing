@@ -1001,3 +1001,79 @@ func (ss *Session) SRPolicies() []*table.SRPolicy {
 	}
 	return policies
 }
+
+// reoptimizeStats summarizes the outcome of one reoptimizeDynamicPolicies sweep.
+type reoptimizeStats struct {
+	Reoptimized int
+	Unchanged   int
+	Stale       int
+	NoPath      int
+	Errored     int
+}
+
+func (s reoptimizeStats) total() int {
+	return s.Reoptimized + s.Unchanged + s.Stale + s.NoPath + s.Errored
+}
+
+// reoptimizeDynamicPolicies re-evaluates every table.PolicyTypeDynamic SR
+// Policy on this session against ted and requests a PCUpd (via
+// SendPCUpdate) for any whose freshly computed CSPF segment list differs
+// from what SRPolicies() currently reports as installed.
+//
+// This never writes to ss.srPolicies/srPoliciesMu itself - only the
+// existing confirming-PCRpt path (RegisterSRPolicy -> updateOrCreatePolicy)
+// mutates live policy state, exactly as it already does for CLI-issued
+// updates. That means this function never asserts a computed path is
+// already installed, only that it was requested - the log wording below is
+// deliberately phrased that way.
+func (ss *Session) reoptimizeDynamicPolicies(ted *table.LsTED) reoptimizeStats {
+	var stats reoptimizeStats
+	addrIndex := buildAddressRouterIDIndex(ted)
+
+	for _, policy := range ss.SRPolicies() {
+		if policy.Type != table.PolicyTypeDynamic {
+			continue
+		}
+
+		srcRouterID, srcErr := ss.findRouterIDFromAddress(ted, addrIndex, policy.SrcAddr)
+		dstRouterID, dstErr := ss.findRouterIDFromAddress(ted, addrIndex, policy.DstAddr)
+		if srcErr != nil || dstErr != nil {
+			ss.logger.Info("dynamic policy no longer resolves to a valid endpoint, leaving in place",
+				zap.String("policyName", policy.Name), zap.Uint32("plspID", policy.PlspID))
+			stats.Stale++
+			continue
+		}
+
+		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted)
+		if err != nil {
+			// e.g. no all-SR path currently exists - an expected topology
+			// state (mirrors cspf.CSPF's own clean-error semantics), not a
+			// bug. Leave the installed LSP alone rather than push into a
+			// path that doesn't currently compute.
+			ss.logger.Info("no SR path currently available for dynamic policy, leaving installed path as-is",
+				zap.String("policyName", policy.Name), zap.Uint32("plspID", policy.PlspID), zap.Error(err))
+			stats.NoPath++
+			continue
+		}
+
+		if slices.EqualFunc(policy.SegmentList, computed, table.SegmentsEqual) {
+			stats.Unchanged++
+			continue
+		}
+
+		updated := *policy
+		updated.SegmentList = computed
+		if err := ss.SendPCUpdate(updated); err != nil {
+			ss.logger.Error("failed to request reoptimize for dynamic policy",
+				zap.String("policyName", policy.Name), zap.Uint32("plspID", policy.PlspID), zap.Error(err))
+			stats.Errored++
+			continue
+		}
+		ss.logger.Info("requesting reoptimize for dynamic policy",
+			zap.String("policyName", policy.Name), zap.Uint32("plspID", policy.PlspID),
+			zap.Any("from", policy.SegmentList), zap.Any("to", computed))
+		stats.Reoptimized++
+	}
+
+	return stats
+}

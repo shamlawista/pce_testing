@@ -22,14 +22,15 @@ import (
 )
 
 type Server struct {
-	sessionMu   sync.RWMutex // guards sessionList; written from the PCEP accept/close goroutines, read from gRPC handler goroutines.
-	sessionList []*Session
-	tedMu       sync.RWMutex // guards ted; written from the TED-update goroutine, read from gRPC handler goroutines.
-	ted         *table.LsTED
-	logger      *zap.Logger
-	asn         uint32
-	frrPeers    map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
-	nokiaPeers  map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
+	sessionMu    sync.RWMutex // guards sessionList; written from the PCEP accept/close goroutines, read from gRPC handler goroutines.
+	sessionList  []*Session
+	tedMu        sync.RWMutex // guards ted; written from the TED-update goroutine, read from gRPC handler goroutines.
+	ted          *table.LsTED
+	logger       *zap.Logger
+	asn          uint32
+	frrPeers     map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
+	nokiaPeers   map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
+	reoptimizeMu sync.Mutex              // non-overlap guard for the async TED-triggered reoptimization sweep; TryLock'd only from the NewPCE TED-update goroutine.
 }
 
 // TED returns the current TED snapshot. Safe for concurrent use with setTED.
@@ -52,6 +53,37 @@ func (s *Server) propagateTED(ted *table.LsTED) {
 	for _, ss := range s.Sessions() {
 		ss.setTED(ted)
 	}
+}
+
+// reoptimizeDynamicPolicies runs the reoptimization sweep on every synced
+// session (same IsSynced filter as SRPolicies() above) and logs an
+// aggregate summary. Does not itself guard against overlapping calls -
+// callers (the NewPCE TED-update goroutine, via reoptimizeMu) own that -
+// so this stays trivially callable/testable in isolation.
+func (s *Server) reoptimizeDynamicPolicies(ted *table.LsTED, logger *zap.Logger) {
+	var total reoptimizeStats
+	for _, ss := range s.Sessions() {
+		if !ss.IsSynced() {
+			continue
+		}
+		stats := ss.reoptimizeDynamicPolicies(ted)
+		total.Reoptimized += stats.Reoptimized
+		total.Unchanged += stats.Unchanged
+		total.Stale += stats.Stale
+		total.NoPath += stats.NoPath
+		total.Errored += stats.Errored
+	}
+
+	if total.total() == 0 {
+		logger.Debug("reoptimization sweep complete: nothing to do")
+		return
+	}
+	logger.Info("reoptimization sweep complete",
+		zap.Int("reoptimized", total.Reoptimized),
+		zap.Int("unchanged", total.Unchanged),
+		zap.Int("stale", total.Stale),
+		zap.Int("noPath", total.NoPath),
+		zap.Int("errored", total.Errored))
 }
 
 type PCEOptions struct {
@@ -104,6 +136,15 @@ func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem
 				s.setTED(ted)
 				s.propagateTED(ted)
 				logger.Debug("Update TED")
+
+				if s.reoptimizeMu.TryLock() {
+					go func(ted *table.LsTED) {
+						defer s.reoptimizeMu.Unlock()
+						s.reoptimizeDynamicPolicies(ted, logger)
+					}(ted)
+				} else {
+					logger.Debug("skipping reoptimization sweep: a previous sweep is still in progress")
+				}
 			}
 		}()
 	}

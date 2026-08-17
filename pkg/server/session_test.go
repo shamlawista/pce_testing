@@ -11,7 +11,9 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1300,5 +1302,328 @@ func TestComputePathFromTED_UsesLiveTEDNotConstructionTimeTED(t *testing.T) {
 	}
 	if len(segments) != 1 {
 		t.Fatalf("expected 1 segment (dst node SID), got %d: %v", len(segments), segments)
+	}
+}
+
+// srCapableTEDNode builds an SR-MPLS-capable *table.LsNode: SRGB 16000-17000,
+// Node SID 16000+sidIndex, with a /32 loopback prefix at addr.
+func srCapableTEDNode(routerID, addr string, sidIndex uint32) *table.LsNode {
+	return &table.LsNode{
+		RouterID:  routerID,
+		SrgbBegin: 16000,
+		SrgbEnd:   17000,
+		Prefixes: []*table.LsPrefix{
+			{Prefix: netip.MustParsePrefix(addr + "/32"), SidIndex: sidIndex, HasSidIndex: true},
+		},
+	}
+}
+
+// linkTEDNodes adds a bidirectional TE-metric adjacency between a and b.
+// newTestStateReport-driven policies carry no MetricObjects, so
+// selectMetricType falls back to TEMetric for an RFC-compliant session
+// (NewSession's default pccType) - reoptimizeDynamicPolicies instead always
+// uses the policy's own stored Metric, but the tests below use TEMetric
+// throughout for consistency with the intents they remember.
+func linkTEDNodes(a, b *table.LsNode, metric uint32) {
+	a.Links = append(a.Links, &table.LsLink{LocalNode: a, RemoteNode: b, Metrics: []*table.Metric{table.NewMetric(table.TEMetric, metric)}})
+	b.Links = append(b.Links, &table.LsLink{LocalNode: b, RemoteNode: a, Metrics: []*table.Metric{table.NewMetric(table.TEMetric, metric)}})
+}
+
+// newTestStateReportForAddrs is like newTestStateReport but lets the caller
+// control src/dst addresses and the installed SID list, for tests that need
+// more than one policy with distinct endpoints on the same session.
+func newTestStateReportForAddrs(t *testing.T, plspID, srpID uint32, srcAddr, dstAddr netip.Addr, sids []uint32) *pcep.StateReport {
+	t.Helper()
+	sr, err := pcep.NewStateReport()
+	if err != nil {
+		t.Fatalf("failed to create state report: %v", err)
+	}
+	sr.SrpObject.SrpID = srpID
+	sr.LSPObject.PlspID = plspID
+	sr.LSPObject.Name = fmt.Sprintf("policy-%d", plspID)
+	sr.LSPObject.SrcAddr = srcAddr
+	sr.LSPObject.DstAddr = dstAddr
+	sr.LSPObject.OFlag = 0x02
+	for _, sid := range sids {
+		subobj, err := pcep.NewSREroSubobject(table.NewSegmentSRMPLS(sid))
+		if err != nil {
+			t.Fatalf("failed to create SR ERO subobject: %v", err)
+		}
+		sr.EroObject.EroSubobjects = append(sr.EroObject.EroSubobjects, subobj)
+	}
+	return sr
+}
+
+// decodePCUpdSegments reads one PCEP message off conn and returns the
+// segment list carried by its ERO object - used to confirm what
+// reoptimizeDynamicPolicies actually put on the wire, not just that
+// SendPCUpdate returned no error.
+func decodePCUpdSegments(t *testing.T, conn *net.TCPConn) []table.Segment {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+
+	header := make([]byte, pcep.CommonHeaderLength)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		t.Fatalf("failed to read common header: %v", err)
+	}
+	var commonHeader pcep.CommonHeader
+	if err := commonHeader.DecodeFromBytes(header); err != nil {
+		t.Fatalf("failed to decode common header: %v", err)
+	}
+	if commonHeader.MessageType != pcep.MessageTypeUpdate {
+		t.Fatalf("MessageType = %v, want Update", commonHeader.MessageType)
+	}
+
+	body := make([]byte, commonHeader.MessageLength-pcep.CommonHeaderLength)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		t.Fatalf("failed to read PCUpd body: %v", err)
+	}
+
+	const objHeaderLen = 4 // RFC5440 7.2: every PCEP object header is 4 bytes.
+	for offset := 0; offset+objHeaderLen <= len(body); {
+		var h pcep.CommonObjectHeader
+		if err := h.DecodeFromBytes(body[offset:]); err != nil {
+			t.Fatalf("failed to decode object header at offset %d: %v", offset, err)
+		}
+		end := offset + int(h.ObjectLength)
+		if h.ObjectClass == pcep.ObjectClassERO {
+			var ero pcep.EroObject
+			if err := ero.DecodeFromBytes(h.ObjectType, body[offset+objHeaderLen:end]); err != nil {
+				t.Fatalf("failed to decode ERO object: %v", err)
+			}
+			return ero.ToSegmentList()
+		}
+		offset = end
+	}
+	t.Fatal("no ERO object found in PCUpd body")
+	return nil
+}
+
+// assertNothingSent confirms conn receives no bytes within a short window.
+func assertNothingSent(t *testing.T, conn *net.TCPConn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected no bytes to be sent, but read succeeded")
+	} else if !os.IsTimeout(err) {
+		t.Fatalf("expected a read timeout, got: %v", err)
+	}
+}
+
+func TestReoptimizeDynamicPolicies_PathChangedSendsPCUpdate(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7) // installs stale segments [16002, 16003]
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 99) // SID 16099, differs from stored [16002, 16003]
+	linkTEDNodes(src, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Reoptimized: 1}) {
+		t.Fatalf("stats = %+v, want only Reoptimized=1", stats)
+	}
+
+	got := decodePCUpdSegments(t, clientConn)
+	want := []table.Segment{table.NewSegmentSRMPLS(16099)}
+	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
+		t.Errorf("PCUpd segments = %v, want %v", got, want)
+	}
+}
+
+func TestReoptimizeDynamicPolicies_PathUnchangedSendsNothing(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003]
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	// src -sidIndex 1(unused)-> transit(sidIndex 2 -> SID 16002) -> dst(sidIndex 3 -> SID 16003)
+	// so CSPF computes exactly [16002, 16003], matching what's already installed.
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	transit := srCapableTEDNode("transit-router", "10.255.0.9", 2)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 3)
+	linkTEDNodes(src, transit, 10)
+	linkTEDNodes(transit, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{
+		src.RouterID: src, transit.RouterID: transit, dst.RouterID: dst,
+	}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Unchanged: 1}) {
+		t.Fatalf("stats = %+v, want only Unchanged=1", stats)
+	}
+	assertNothingSent(t, clientConn)
+}
+
+func TestReoptimizeDynamicPolicies_DestinationUnresolvableIsStale(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7) // dst = 10.255.0.2
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	// TED only knows about the source - the destination dropped out entirely
+	// (e.g. the node lost its loopback prefix, or left the TED altogether).
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Stale: 1}) {
+		t.Fatalf("stats = %+v, want only Stale=1", stats)
+	}
+	assertNothingSent(t, clientConn)
+}
+
+func TestReoptimizeDynamicPolicies_NoSRPathIsNoPath(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	// Both endpoints resolve fine, but there is no link between them at all.
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 2)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{NoPath: 1}) {
+		t.Fatalf("stats = %+v, want only NoPath=1", stats)
+	}
+	assertNothingSent(t, clientConn)
+}
+
+func TestReoptimizeDynamicPolicies_ExplicitTypeNeverTouched(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003]
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	// A TED that would compute a completely different path, if this were dynamic.
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 99)
+	linkTEDNodes(src, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats.total() != 0 {
+		t.Fatalf("stats = %+v, want all zero - explicit policies must never be touched", stats)
+	}
+	assertNothingSent(t, clientConn)
+}
+
+func TestReoptimizeDynamicPolicies_UnspecifiedTypeNeverTouched(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	// No TED at construction, so the unsolicited (SRP-ID 0) report registers
+	// as-is via handleReportedSRPolicy without ever setting Type/Metric.
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 0)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+	if policy, found := ss.SearchSRPolicy(1); !found || policy.Type != table.PolicyType("") {
+		t.Fatalf("test setup invalid: policy.Type = %q, want empty (found=%v)", policy.Type, found)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 99)
+	linkTEDNodes(src, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats.total() != 0 {
+		t.Fatalf("stats = %+v, want all zero - a policy with unspecified Type must never be touched", stats)
+	}
+	assertNothingSent(t, clientConn)
+}
+
+func TestReoptimizeDynamicPolicies_MultiplePoliciesAggregateStats(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	srcAddr := netip.MustParseAddr("10.255.0.1")
+	changedDst := netip.MustParseAddr("10.255.0.2")
+	staleDst := netip.MustParseAddr("10.255.0.99") // never present in the TED below
+
+	changed := newTestStateReportForAddrs(t, 1, 7, srcAddr, changedDst, []uint32{16002, 16003})
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(changed, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport (changed) failed: %v", err)
+	}
+
+	stale := newTestStateReportForAddrs(t, 2, 8, srcAddr, staleDst, []uint32{16002, 16003})
+	ss.rememberSRPolicyIntent(8, table.PolicyTypeDynamic, table.TEMetric)
+	if err := ss.handleStateReport(stale, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport (stale) failed: %v", err)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 99)
+	linkTEDNodes(src, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Reoptimized: 1, Stale: 1}) {
+		t.Fatalf("stats = %+v, want Reoptimized=1, Stale=1", stats)
+	}
+
+	got := decodePCUpdSegments(t, clientConn)
+	want := []table.Segment{table.NewSegmentSRMPLS(16099)}
+	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
+		t.Errorf("PCUpd segments = %v, want %v", got, want)
+	}
+}
+
+func TestReoptimizeDynamicPolicies_SendPCUpdateErrorCountsAsErroredNotFatal(t *testing.T) {
+	serverConn, _ := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	for i, srpID := range []uint32{7, 8} {
+		sr := newTestStateReport(t, uint32(i+1), srpID)
+		ss.rememberSRPolicyIntent(srpID, table.PolicyTypeDynamic, table.TEMetric)
+		if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+			t.Fatalf("handleStateReport failed: %v", err)
+		}
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 99)
+	linkTEDNodes(src, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{src.RouterID: src, dst.RouterID: dst}}
+
+	// Close the write side so every SendPCUpdate on this session fails.
+	if err := serverConn.Close(); err != nil {
+		t.Fatalf("failed to close server conn: %v", err)
+	}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Errored: 2}) {
+		t.Fatalf("stats = %+v, want Errored=2 - a send failure on one policy must not stop the others from being attempted", stats)
 	}
 }
