@@ -131,6 +131,19 @@
                 "usidMode": {
                     "type": "boolean",
                     "default": false
+                },
+                "intentPersistence": {
+                    "type": "object",
+                    "properties": {
+                        "enable": {
+                            "type": "boolean",
+                            "default": false
+                        },
+                        "path": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "required": [

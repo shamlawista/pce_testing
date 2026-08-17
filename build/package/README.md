@@ -75,6 +75,12 @@ docker run -d --network host \
     ghcr.io/nttcom/pola:latest
 ```
 
+If `global.intentPersistence.enable` is set in `polad.yaml`, mount its
+directory too (the default sample path is `/var/lib/pola`), the same way
+the log directory is mounted above. Otherwise SR policy intent never
+survives a container recreation - exactly the scenario that feature exists
+to survive.
+
 ## Run with Bridge Network Mode
 
 `polad` reads `polad.yaml` from its working directory, which is `/pola` inside the container. Mount your config directory there as shown below.
@@ -104,3 +110,9 @@ docker run -d --network pcep_net --ip <PCE Address> \
 # Connect the PCC container to the network
 docker network connect pcep_net <PCC container name>
 ```
+
+If `global.intentPersistence.enable` is set in `polad.yaml`, mount its
+directory too (the default sample path is `/var/lib/pola`), the same way
+the log directory is mounted above. Otherwise SR policy intent never
+survives a container recreation - exactly the scenario that feature exists
+to survive.
