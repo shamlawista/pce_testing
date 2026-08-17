@@ -1127,7 +1127,7 @@ func TestFindRouterIDFromAddress(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ss.findRouterIDFromAddress(addrIndex, tc.addr)
+			got, err := ss.findRouterIDFromAddress(ted, addrIndex, tc.addr)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got routerID %q", got)
@@ -1159,7 +1159,7 @@ func TestExtractSrcDstRouterIDs(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), ted, 0)
 
 	sr := newTestStateReport(t, 1, 0)
-	srcRouterID, dstRouterID, err := ss.extractSrcDstRouterIDs(*sr)
+	srcRouterID, dstRouterID, err := ss.extractSrcDstRouterIDs(*sr, ted)
 	if err != nil {
 		t.Fatalf("extractSrcDstRouterIDs failed: %v", err)
 	}
@@ -1176,7 +1176,7 @@ func TestExtractSrcDstRouterIDs_AddressNotFound(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), ted, 0)
 
 	sr := newTestStateReport(t, 1, 0)
-	if _, _, err := ss.extractSrcDstRouterIDs(*sr); err == nil {
+	if _, _, err := ss.extractSrcDstRouterIDs(*sr, ted); err == nil {
 		t.Error("expected an error when neither address is present in the TED")
 	}
 }
@@ -1197,4 +1197,108 @@ func TestIsSynced_ConcurrentAccess(t *testing.T) {
 		ss.IsSynced()
 	}
 	<-done
+}
+
+func TestSessionTED_ReturnsLatestSetValue(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+
+	tedA := &table.LsTED{Nodes: map[string]*table.LsNode{"a": {RouterID: "a"}}}
+	tedB := &table.LsTED{Nodes: map[string]*table.LsNode{"b": {RouterID: "b"}}}
+
+	ss.setTED(tedA)
+	if got := ss.TED(); got != tedA {
+		t.Fatalf("TED() after first setTED: got %p, want %p", got, tedA)
+	}
+
+	ss.setTED(tedB)
+	if got := ss.TED(); got != tedB {
+		t.Fatalf("TED() after second setTED: got %p, want %p", got, tedB)
+	}
+}
+
+// TestSessionTED_ConcurrentAccess verifies that setTED and TED are
+// synchronized - this is the actual regression test for the bug where
+// ss.ted was read/written without any lock once it became live-updatable.
+// Run with `go test -race` to catch a regression.
+func TestSessionTED_ConcurrentAccess(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	tedA := &table.LsTED{Nodes: map[string]*table.LsNode{}}
+	tedB := &table.LsTED{Nodes: map[string]*table.LsNode{}}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			if i%2 == 0 {
+				ss.setTED(tedA)
+			} else {
+				ss.setTED(tedB)
+			}
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		ss.TED()
+	}
+	<-done
+}
+
+// TestComputePathFromTED_UsesLiveTEDNotConstructionTimeTED is the regression
+// test for the Session.ted staleness bug: computePathFromTED must reflect
+// whatever setTED last delivered, not the TED snapshot passed to NewSession.
+func TestComputePathFromTED_UsesLiveTEDNotConstructionTimeTED(t *testing.T) {
+	srCapableNode := func(routerID, prefix string, sidIndex uint32) *table.LsNode {
+		return &table.LsNode{
+			RouterID:  routerID,
+			SrgbBegin: 16000,
+			SrgbEnd:   17000,
+			Prefixes: []*table.LsPrefix{
+				{Prefix: netip.MustParsePrefix(prefix), SidIndex: sidIndex, HasSidIndex: true},
+			},
+		}
+	}
+
+	// Construction-time TED: src and dst exist but have no link between them,
+	// so CSPF cannot find a path.
+	staleSrc := srCapableNode("src-router", "10.255.0.1/32", 1)
+	staleDst := srCapableNode("dst-router", "10.255.0.2/32", 2)
+	staleTED := &table.LsTED{Nodes: map[string]*table.LsNode{
+		staleSrc.RouterID: staleSrc,
+		staleDst.RouterID: staleDst,
+	}}
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), staleTED, 0)
+	sr := newTestStateReport(t, 1, 0)
+
+	if _, err := ss.computePathFromTED(*sr); err == nil {
+		t.Fatal("expected an error against the construction-time TED (no link between src and dst)")
+	}
+
+	// Live update: same nodes, now linked. newTestStateReport carries no
+	// MetricObjects, so selectMetricType falls back to TEMetric for an
+	// RFC-compliant session (NewSession's default pccType) - the link must
+	// carry that metric type or CSPF hard-fails on "metric not defined".
+	linkedSrc := srCapableNode("src-router", "10.255.0.1/32", 1)
+	linkedDst := srCapableNode("dst-router", "10.255.0.2/32", 2)
+	linkedSrc.Links = []*table.LsLink{{
+		LocalNode: linkedSrc, RemoteNode: linkedDst,
+		Metrics: []*table.Metric{table.NewMetric(table.TEMetric, 10)},
+	}}
+	linkedDst.Links = []*table.LsLink{{
+		LocalNode: linkedDst, RemoteNode: linkedSrc,
+		Metrics: []*table.Metric{table.NewMetric(table.TEMetric, 10)},
+	}}
+	updatedTED := &table.LsTED{Nodes: map[string]*table.LsNode{
+		linkedSrc.RouterID: linkedSrc,
+		linkedDst.RouterID: linkedDst,
+	}}
+	ss.setTED(updatedTED)
+
+	segments, err := ss.computePathFromTED(*sr)
+	if err != nil {
+		t.Fatalf("computePathFromTED after setTED failed: %v", err)
+	}
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment (dst node SID), got %d: %v", len(segments), segments)
+	}
 }

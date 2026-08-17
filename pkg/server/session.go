@@ -54,8 +54,22 @@ type Session struct {
 	forceNokia              bool                       // set by the server before Established() if this peer is listed under PCEOptions.NokiaPeers.
 	advertisedCapabilities  []pcep.CapabilityInterface // Capabilities Pola advertises to the PCC.
 	receivedPccCapabilities []pcep.CapabilityInterface // Capabilities received from the PCC.
+	tedMu                   sync.RWMutex               // guards ted; written via Server.propagateTED from the TED-update goroutine, read from the PCEP-message-reading goroutine.
 	ted                     *table.LsTED
 	asn                     uint32
+}
+
+// TED returns the session's current TED snapshot. Safe for concurrent use with setTED.
+func (ss *Session) TED() *table.LsTED {
+	ss.tedMu.RLock()
+	defer ss.tedMu.RUnlock()
+	return ss.ted
+}
+
+func (ss *Session) setTED(ted *table.LsTED) {
+	ss.tedMu.Lock()
+	defer ss.tedMu.Unlock()
+	ss.ted = ted
 }
 
 // srPolicyIntent stores policy information not reported by PCEP.
@@ -539,7 +553,7 @@ func (ss *Session) handleSRPolicyWithPLSPID(sr *pcep.StateReport) error {
 	ss.logger.Debug("Received SR Policy", zap.Uint32("plspID", sr.LSPObject.PlspID))
 
 	// Skip path computation for removed SR Policies or when no TED is available.
-	if sr.LSPObject.RFlag || ss.ted == nil {
+	if sr.LSPObject.RFlag || ss.TED() == nil {
 		return ss.handleReportedSRPolicy(sr)
 	}
 
@@ -580,11 +594,12 @@ func (ss *Session) handleReportedSRPolicy(sr *pcep.StateReport) error {
 }
 
 func (ss *Session) computePathFromTED(sr pcep.StateReport) ([]table.Segment, error) {
-	if ss.ted == nil {
+	ted := ss.TED()
+	if ted == nil {
 		return nil, errors.New("TED not available")
 	}
 
-	srcRouterID, dstRouterID, err := ss.extractSrcDstRouterIDs(sr)
+	srcRouterID, dstRouterID, err := ss.extractSrcDstRouterIDs(sr, ted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract router IDs: %w", err)
 	}
@@ -596,7 +611,7 @@ func (ss *Session) computePathFromTED(sr pcep.StateReport) ([]table.Segment, err
 		zap.String("dstRouterID", dstRouterID),
 		zap.String("metricType", metricType.String()))
 
-	segmentList, err := cspf.CSPF(srcRouterID, dstRouterID, metricType, ss.ted)
+	segmentList, err := cspf.CSPF(srcRouterID, dstRouterID, metricType, ted)
 	if err != nil {
 		return nil, fmt.Errorf("CSPF computation failed: %w", err)
 	}
@@ -604,7 +619,7 @@ func (ss *Session) computePathFromTED(sr pcep.StateReport) ([]table.Segment, err
 	return segmentList, nil
 }
 
-func (ss *Session) extractSrcDstRouterIDs(sr pcep.StateReport) (string, string, error) {
+func (ss *Session) extractSrcDstRouterIDs(sr pcep.StateReport, ted *table.LsTED) (string, string, error) {
 	var srcAddr, dstAddr netip.Addr
 
 	if sr.LSPObject.SrcAddr.IsValid() {
@@ -618,14 +633,14 @@ func (ss *Session) extractSrcDstRouterIDs(sr pcep.StateReport) (string, string, 
 		return "", "", errors.New("could not extract valid source and destination addresses")
 	}
 
-	addrIndex := buildAddressRouterIDIndex(ss.ted)
+	addrIndex := buildAddressRouterIDIndex(ted)
 
-	srcRouterID, err := ss.findRouterIDFromAddress(addrIndex, srcAddr)
+	srcRouterID, err := ss.findRouterIDFromAddress(ted, addrIndex, srcAddr)
 	if err != nil {
 		return "", "", fmt.Errorf("cannot find source router ID for %s: %w", srcAddr, err)
 	}
 
-	dstRouterID, err := ss.findRouterIDFromAddress(addrIndex, dstAddr)
+	dstRouterID, err := ss.findRouterIDFromAddress(ted, addrIndex, dstAddr)
 	if err != nil {
 		return "", "", fmt.Errorf("cannot find destination router ID for %s: %w", dstAddr, err)
 	}
@@ -633,8 +648,8 @@ func (ss *Session) extractSrcDstRouterIDs(sr pcep.StateReport) (string, string, 
 	return srcRouterID, dstRouterID, nil
 }
 
-func (ss *Session) findRouterIDFromAddress(addrIndex map[netip.Addr]string, addr netip.Addr) (string, error) {
-	if node, ok := ss.ted.Nodes[addr.String()]; ok {
+func (ss *Session) findRouterIDFromAddress(ted *table.LsTED, addrIndex map[netip.Addr]string, addr netip.Addr) (string, error) {
+	if node, ok := ted.Nodes[addr.String()]; ok {
 		return node.RouterID, nil
 	}
 	if routerID, ok := addrIndex[addr]; ok {

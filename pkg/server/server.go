@@ -45,6 +45,15 @@ func (s *Server) setTED(ted *table.LsTED) {
 	s.ted = ted
 }
 
+// propagateTED pushes ted to every currently-registered session, so each
+// session's own TED() reflects live BGP-LS updates instead of staying frozen
+// at whatever the TED looked like when that PCEP session was established.
+func (s *Server) propagateTED(ted *table.LsTED) {
+	for _, ss := range s.Sessions() {
+		ss.setTED(ted)
+	}
+}
+
 type PCEOptions struct {
 	PCEPAddr  string
 	PCEPPort  string
@@ -93,6 +102,7 @@ func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem
 				}
 				ted.Update(tedElems, o.ASN)
 				s.setTED(ted)
+				s.propagateTED(ted)
 				logger.Debug("Update TED")
 			}
 		}()
