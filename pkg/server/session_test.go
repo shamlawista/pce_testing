@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -439,6 +440,34 @@ func TestCloseSession_ClearsSRPolicyIntents(t *testing.T) {
 
 	if len(ss.srPolicyIntents) != 0 {
 		t.Errorf("srPolicyIntents was not cleared on session close: %+v", ss.srPolicyIntents)
+	}
+}
+
+// TestCloseSession_DoesNotTouchIntentStore proves a mere disconnect never
+// deletes persisted intent - surviving disconnects (including a polad
+// restart) is the entire point of the durable intent store, unlike the
+// ephemeral srPolicyIntents map, which closeSession does clear above. This
+// is the single most important behavioral guarantee of the whole feature
+// and the easiest thing for a future change to accidentally regress.
+func TestCloseSession_DoesNotTouchIntentStore(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+	if err := ss.intentStore.save(ss.peerAddr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+		t.Fatalf("failed to seed intent store: %v", err)
+	}
+
+	s := &Server{sessionList: []*Session{ss}, logger: zap.NewNop()}
+	s.closeSession(ss)
+
+	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); !ok {
+		t.Error("expected persisted intent to survive a session close")
 	}
 }
 
@@ -1625,5 +1654,258 @@ func TestReoptimizeDynamicPolicies_SendPCUpdateErrorCountsAsErroredNotFatal(t *t
 	stats := ss.reoptimizeDynamicPolicies(ted)
 	if stats != (reoptimizeStats{Errored: 2}) {
 		t.Fatalf("stats = %+v, want Errored=2 - a send failure on one policy must not stop the others from being attempted", stats)
+	}
+}
+
+// TestUpdateOrCreatePolicy_CreateBranchFallsBackToIntentStore is the actual
+// restart/resync regression test: SRP-ID 0 is exactly what a state-sync
+// PCRpt looks like (sent by the PCC on every reconnect, restart or not),
+// and never correlates to a remembered ephemeral intent.
+func TestUpdateOrCreatePolicy_CreateBranchFallsBackToIntentStore(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+		t.Fatalf("failed to seed intent store: %v", err)
+	}
+
+	sr := newTestStateReport(t, 1, 0)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	policy, found := ss.SearchSRPolicy(1)
+	if !found {
+		t.Fatal("policy not registered")
+	}
+	if policy.Type != table.PolicyTypeDynamic || policy.Metric != table.TEMetric {
+		t.Errorf("got Type=%q Metric=%v, want Type=%q Metric=%v", policy.Type, policy.Metric, table.PolicyTypeDynamic, table.TEMetric)
+	}
+}
+
+func TestUpdateOrCreatePolicy_UpdateBranchFallsBackToIntentStore(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	// First registration: no intent anywhere yet, policy created with Type unset.
+	sr := newTestStateReport(t, 1, 0)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("first handleStateReport failed: %v", err)
+	}
+	if policy, _ := ss.SearchSRPolicy(1); policy.Type != table.PolicyType("") {
+		t.Fatalf("test setup invalid: expected Type unset after first registration, got %q", policy.Type)
+	}
+
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+		t.Fatalf("failed to seed intent store: %v", err)
+	}
+
+	// Second report for the same PlspID with a newer LSPID -> update branch.
+	sr2 := newTestStateReport(t, 1, 0)
+	sr2.LSPObject.LSPID = 2
+	if err := ss.handleStateReport(sr2, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("second handleStateReport failed: %v", err)
+	}
+
+	policy, found := ss.SearchSRPolicy(1)
+	if !found {
+		t.Fatal("policy not found")
+	}
+	if policy.Type != table.PolicyTypeDynamic || policy.Metric != table.TEMetric {
+		t.Errorf("got Type=%q Metric=%v, want Type=%q Metric=%v", policy.Type, policy.Metric, table.PolicyTypeDynamic, table.TEMetric)
+	}
+}
+
+func TestUpdateOrCreatePolicy_SRPIDIntentTakesPrecedenceOverStore(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeExplicit, table.UnspecifiedMetric); err != nil {
+		t.Fatalf("failed to seed intent store: %v", err)
+	}
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+
+	sr := newTestStateReport(t, 1, 7)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	policy, found := ss.SearchSRPolicy(1)
+	if !found {
+		t.Fatal("policy not found")
+	}
+	if policy.Type != table.PolicyTypeDynamic || policy.Metric != table.TEMetric {
+		t.Errorf("SRP-ID intent should take precedence over the store: got Type=%q Metric=%v, want Type=%q Metric=%v",
+			policy.Type, policy.Metric, table.PolicyTypeDynamic, table.TEMetric)
+	}
+}
+
+func TestSendPCUpdate_PersistsIntent(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	srPolicy := table.SRPolicy{
+		Name: "policy1", SrcAddr: netip.MustParseAddr("10.255.0.1"), DstAddr: netip.MustParseAddr("10.255.0.2"),
+		Type: table.PolicyTypeDynamic, Metric: table.TEMetric,
+	}
+	if err := ss.SendPCUpdate(srPolicy); err != nil {
+		t.Fatalf("SendPCUpdate failed: %v", err)
+	}
+
+	polType, metric, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
+	if !ok {
+		t.Fatal("expected intent to be persisted after SendPCUpdate")
+	}
+	if polType != table.PolicyTypeDynamic || metric != table.TEMetric {
+		t.Errorf("got Type=%q Metric=%v, want Type=%q Metric=%v", polType, metric, table.PolicyTypeDynamic, table.TEMetric)
+	}
+}
+
+func TestSendPCInitiate_PersistsIntent(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	srPolicy := table.SRPolicy{
+		Name: "policy1", SrcAddr: netip.MustParseAddr("10.255.0.1"), DstAddr: netip.MustParseAddr("10.255.0.2"),
+		Type: table.PolicyTypeDynamic, Metric: table.IGPMetric,
+		SegmentList: []table.Segment{table.NewSegmentSRMPLS(16001)},
+	}
+	if err := ss.SendPCInitiate(srPolicy, false); err != nil {
+		t.Fatalf("SendPCInitiate failed: %v", err)
+	}
+
+	polType, metric, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
+	if !ok {
+		t.Fatal("expected intent to be persisted after SendPCInitiate")
+	}
+	if polType != table.PolicyTypeDynamic || metric != table.IGPMetric {
+		t.Errorf("got Type=%q Metric=%v, want Type=%q Metric=%v", polType, metric, table.PolicyTypeDynamic, table.IGPMetric)
+	}
+}
+
+func TestSendPCInitiate_DeleteDoesNotPersistIntent(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	srPolicy := table.SRPolicy{Name: "policy1", PlspID: 1, Type: table.PolicyTypeDynamic, Metric: table.TEMetric}
+	if err := ss.SendPCInitiate(srPolicy, true); err != nil {
+		t.Fatalf("SendPCInitiate (delete) failed: %v", err)
+	}
+
+	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
+		t.Error("expected no intent to be persisted for a delete request - it's pointless, DeleteSRPolicy's cleanup handles removal")
+	}
+}
+
+// TestSendPCUpdate_FailedSendDoesNotPersistIntent validates the chosen
+// persist timing: after a confirmed successful send, not right after
+// allocateSRPID - a request that never left the box shouldn't leave a
+// durable "intent" behind.
+func TestSendPCUpdate_FailedSendDoesNotPersistIntent(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	if err := client.Close(); err != nil {
+		t.Fatalf("failed to close client connection: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("failed to close server connection: %v", err)
+	}
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	srPolicy := table.SRPolicy{Name: "policy1", Type: table.PolicyTypeDynamic, Metric: table.TEMetric}
+	if err := ss.SendPCUpdate(srPolicy); err == nil {
+		t.Fatal("expected SendPCUpdate to fail once the connection is closed")
+	}
+
+	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
+		t.Error("expected no intent to be persisted for a failed send")
+	}
+}
+
+// TestSendPCUpdate_RepeatedUnchangedDoesNotRewriteFile ties the intentStore
+// hot-path safety fix (save() no-ops on an unchanged value) directly to the
+// code path that motivated it: SendPCUpdate fires on every TED-triggered
+// reoptimize and every spontaneous PCC re-report, where Type/Metric almost
+// never actually change.
+func TestSendPCUpdate_RepeatedUnchangedDoesNotRewriteFile(t *testing.T) {
+	server, client := newTCPConnPair(t)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("failed to close client connection: %v", err)
+		}
+	})
+
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
+	path := filepath.Join(t.TempDir(), "intents.json")
+	ss.intentStore = newIntentStore(path)
+
+	srPolicy := table.SRPolicy{Name: "policy1", Type: table.PolicyTypeDynamic, Metric: table.TEMetric}
+	if err := ss.SendPCUpdate(srPolicy); err != nil {
+		t.Fatalf("first SendPCUpdate failed: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("failed to remove file: %v", err)
+	}
+
+	if err := ss.SendPCUpdate(srPolicy); err != nil {
+		t.Fatalf("second SendPCUpdate failed: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected no rewrite for an unchanged intent, but the file exists (err=%v)", err)
+	}
+}
+
+func TestDeleteSRPolicy_RemovesPersistedIntent(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
+
+	sr := newTestStateReport(t, 1, 0)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+		t.Fatalf("failed to seed intent store: %v", err)
+	}
+
+	deleteReport := newTestStateReport(t, 1, 0)
+	deleteReport.LSPObject.RFlag = true
+	ss.DeleteSRPolicy(*deleteReport)
+
+	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "pe01-policy1"); ok {
+		t.Error("expected persisted intent to be removed after DeleteSRPolicy")
+	}
+}
+
+func TestDeleteSRPolicy_UnregisteredPlspIDDoesNotTouchStore(t *testing.T) {
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
+	path := filepath.Join(t.TempDir(), "intents.json")
+	ss.intentStore = newIntentStore(path)
+
+	deleteReport := newTestStateReport(t, 99, 0) // never registered
+	deleteReport.LSPObject.RFlag = true
+	ss.DeleteSRPolicy(*deleteReport)
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected no file to be created, since nothing matched (err=%v)", err)
 	}
 }

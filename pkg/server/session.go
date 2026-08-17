@@ -57,6 +57,7 @@ type Session struct {
 	tedMu                   sync.RWMutex               // guards ted; written via Server.propagateTED from the TED-update goroutine, read from the PCEP-message-reading goroutine.
 	ted                     *table.LsTED
 	asn                     uint32
+	intentStore             *intentStore // nil = persistence disabled; set by Server.Serve before Established().
 }
 
 // TED returns the session's current TED snapshot. Safe for concurrent use with setTED.
@@ -778,6 +779,12 @@ func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error
 		ss.forgetSRPolicyIntent(srpID)
 		return err
 	}
+	if !lspDelete {
+		// Persisting intent for a policy being torn down is pointless -
+		// DeleteSRPolicy's cleanup removes any existing entry once the
+		// confirming PCRpt arrives.
+		ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric)
+	}
 	return nil
 }
 
@@ -797,7 +804,27 @@ func (ss *Session) SendPCUpdate(srPolicy table.SRPolicy) error {
 		ss.forgetSRPolicyIntent(srpID)
 		return err
 	}
+	ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric)
 	return nil
+}
+
+// persistIntent durably records a policy's Type/Metric so it survives a
+// polad restart or a plain PCEP resync (state-sync PCRpts never correlate
+// to the ephemeral, SRP-ID-keyed intent). A no-op if persistence is
+// disabled or Type is unset. Persisted only after a confirmed successful
+// send - unlike the ephemeral SRP-ID intent (which must exist before the
+// send, to win a race with the PCC's reply), the durable store has no such
+// race, so there's no reason to persist intent for a request that never
+// actually left the box. Failures are logged, never fatal - a persistence
+// hiccup must not become a new availability risk for a feature whose whole
+// point is resilience.
+func (ss *Session) persistIntent(name string, polType table.PolicyType, metric table.MetricType) {
+	if ss.intentStore == nil || polType == "" {
+		return
+	}
+	if err := ss.intentStore.save(ss.peerAddr, name, polType, metric); err != nil {
+		ss.logger.Warn("failed to persist SR policy intent", zap.String("policyName", name), zap.Error(err))
+	}
 }
 
 func (ss *Session) RegisterSRPolicy(sr pcep.StateReport) error {
@@ -866,6 +893,22 @@ func resolvePolicyState(oflag uint8) table.PolicyState {
 	}
 }
 
+// resolvePolicyIntent resolves Type/Metric for a state report: the
+// ephemeral SRP-ID intent for this specific request takes precedence;
+// falling back to the durable per-peer/per-name store covers both a
+// resync/restart (state-sync PCRpts carry SRP-ID 0, which never correlates
+// to a remembered intent) and a live session where the PCC's confirming
+// PCRpt arrives after the ephemeral intent's TTL already swept it.
+func (ss *Session) resolvePolicyIntent(srpID uint32, name string) (table.PolicyType, table.MetricType, bool) {
+	if intent, ok := ss.takeSRPolicyIntent(srpID); ok {
+		return intent.polType, intent.metric, true
+	}
+	if ss.intentStore == nil {
+		return "", table.UnspecifiedMetric, false
+	}
+	return ss.intentStore.lookup(ss.peerAddr, name)
+}
+
 // validateSegmentList checks if the Segment List exists and is non-empty
 func validateSegmentList(sr pcep.StateReport) ([]table.Segment, error) {
 	if sr.EroObject == nil {
@@ -896,9 +939,9 @@ func (ss *Session) updateOrCreatePolicy(sr pcep.StateReport, segmentList []table
 				LSPID:       lspID,
 				State:       state,
 			})
-			if intent, ok := ss.takeSRPolicyIntent(sr.SrpObject.SrpID); ok {
-				p.Type = intent.polType
-				p.Metric = intent.metric
+			if polType, metric, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
+				p.Type = polType
+				p.Metric = metric
 			}
 		}
 		return nil
@@ -922,9 +965,9 @@ func (ss *Session) updateOrCreatePolicy(sr pcep.StateReport, segmentList []table
 	}
 
 	p := table.NewSRPolicy(sr.LSPObject.PlspID, sr.LSPObject.Name, segmentList, src, dst, color, preference, lspID, state)
-	if intent, ok := ss.takeSRPolicyIntent(sr.SrpObject.SrpID); ok {
-		p.Type = intent.polType
-		p.Metric = intent.metric
+	if polType, metric, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
+		p.Type = polType
+		p.Metric = metric
 	}
 	ss.srPolicies = append(ss.srPolicies, p)
 	return nil
@@ -940,6 +983,11 @@ func (ss *Session) DeleteSRPolicy(sr pcep.StateReport) {
 		// If the LSP ID is old, it is not the latest data update.
 		if v.PlspID == sr.LSPObject.PlspID && v.LSPID <= lspID {
 			ss.forgetSRPolicyIntent(sr.SrpObject.SrpID)
+			if ss.intentStore != nil {
+				if err := ss.intentStore.delete(ss.peerAddr, v.Name); err != nil {
+					ss.logger.Warn("failed to delete persisted SR policy intent", zap.String("policyName", v.Name), zap.Error(err))
+				}
+			}
 			ss.srPolicies[i] = ss.srPolicies[len(ss.srPolicies)-1]
 			ss.srPolicies = ss.srPolicies[:len(ss.srPolicies)-1]
 			break

@@ -31,6 +31,7 @@ type Server struct {
 	frrPeers     map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
 	nokiaPeers   map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
 	reoptimizeMu sync.Mutex              // non-overlap guard for the async TED-triggered reoptimization sweep; TryLock'd only from the NewPCE TED-update goroutine.
+	intentStore  *intentStore            // nil = persistence disabled; see PCEOptions.IntentPersistenceEnable.
 }
 
 // TED returns the current TED snapshot. Safe for concurrent use with setTED.
@@ -125,6 +126,15 @@ func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem
 		frrPeers:   frrPeers,
 		nokiaPeers: nokiaPeers,
 	}
+	if o.IntentPersistenceEnable {
+		store, err := loadIntentStore(o.IntentPersistencePath)
+		if err != nil {
+			logger.Warn("failed to load persisted SR policy intent store, starting empty",
+				zap.String("path", o.IntentPersistencePath), zap.Error(err))
+			store = newIntentStore(o.IntentPersistencePath)
+		}
+		s.intentStore = store
+	}
 	if o.TEDEnable {
 		s.setTED(&table.LsTED{
 			Nodes: map[string]*table.LsNode{},
@@ -216,6 +226,7 @@ func (s *Server) Serve(address string, port string, usidMode bool) error {
 			return fmt.Errorf("failed to parse remote address %s: %w", tcpConn.RemoteAddr().String(), err)
 		}
 		ss := NewSession(sessionID, peerAddrPort.Addr(), tcpConn, s.logger, s.TED(), s.asn)
+		ss.intentStore = s.intentStore
 		if _, ok := s.frrPeers[peerAddrPort.Addr()]; ok {
 			ss.forceFRR = true
 		}
