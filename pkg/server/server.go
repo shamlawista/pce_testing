@@ -102,6 +102,11 @@ type PCEOptions struct {
 	// (pcep.NokiaLegacy) rather than auto-detected, since Nokia cannot be
 	// distinguished from any other RFC-compliant PCC via its OPEN message.
 	NokiaPeers []netip.Addr
+	// IntentPersistenceEnable/IntentPersistencePath configure durable
+	// storage of SR policy intent (type/metric) so it survives a polad
+	// restart. See intentStore.
+	IntentPersistenceEnable bool
+	IntentPersistencePath   string
 }
 
 func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem) Error {

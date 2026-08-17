@@ -17,3 +17,6 @@ global:
       address: "127.0.0.1"
       port: 50051
   usidMode: true
+  # intentPersistence:
+  #   enable: true
+  #   path: "/var/lib/pola/intents.json"

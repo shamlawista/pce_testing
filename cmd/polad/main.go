@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"path/filepath"
 
 	"go.uber.org/zap"
 
@@ -52,6 +53,16 @@ func main() {
 	// Create log directory if it does not exist
 	if err := os.MkdirAll(c.Global.Log.Path, 0755); err != nil {
 		log.Panicf("failed to create log directory: %v", err)
+	}
+
+	// Create the SR policy intent persistence directory if it does not exist.
+	// Without this, a fresh install enabling the feature against a
+	// non-existent directory would silently never persist anything -
+	// intentStore write failures are only Warn-logged, never fatal.
+	if c.Global.IntentPersistence.Enable {
+		if err := os.MkdirAll(filepath.Dir(c.Global.IntentPersistence.Path), 0755); err != nil {
+			log.Panicf("failed to create intent persistence directory: %v", err)
+		}
 	}
 
 	// Open log file
@@ -107,15 +118,17 @@ func main() {
 
 	// Start PCE server
 	o := &server.PCEOptions{
-		PCEPAddr:   c.Global.PCEP.Address,
-		PCEPPort:   c.Global.PCEP.Port,
-		GRPCAddr:   c.Global.GRPCServer.Address,
-		GRPCPort:   c.Global.GRPCServer.Port,
-		TEDEnable:  c.Global.TED.Enable,
-		USidMode:   c.Global.USidMode,
-		ASN:        c.Global.TED.ASN,
-		FRRPeers:   frrPeers,
-		NokiaPeers: nokiaPeers,
+		PCEPAddr:                c.Global.PCEP.Address,
+		PCEPPort:                c.Global.PCEP.Port,
+		GRPCAddr:                c.Global.GRPCServer.Address,
+		GRPCPort:                c.Global.GRPCServer.Port,
+		TEDEnable:               c.Global.TED.Enable,
+		USidMode:                c.Global.USidMode,
+		ASN:                     c.Global.TED.ASN,
+		FRRPeers:                frrPeers,
+		NokiaPeers:              nokiaPeers,
+		IntentPersistenceEnable: c.Global.IntentPersistence.Enable,
+		IntentPersistencePath:   c.Global.IntentPersistence.Path,
 	}
 	if serverErr := server.NewPCE(o, logger, tedElemsChan); serverErr.Error != nil {
 		logger.Panic("Failed to start new server", zap.String("server", serverErr.Server), zap.Error(serverErr.Error))

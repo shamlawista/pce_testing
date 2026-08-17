@@ -53,13 +53,23 @@ type TED struct {
 	Source string `yaml:"source"`
 }
 
+// IntentPersistence configures durable storage of SR policy intent
+// (type/metric) so it survives a polad restart. Unlike TED, this section
+// is optional: omitting it entirely leaves Enable false, so existing
+// polad.yaml files need no changes.
+type IntentPersistence struct {
+	Enable bool   `yaml:"enable"`
+	Path   string `yaml:"path"`
+}
+
 type Global struct {
-	PCEP       PCEP       `yaml:"pcep"`
-	GRPCServer GRPCServer `yaml:"grpcServer"`
-	Log        Log        `yaml:"log"`
-	TED        *TED       `yaml:"ted"`
-	GoBGP      GoBGP      `yaml:"gobgp"`
-	USidMode   bool       `yaml:"usidMode"`
+	PCEP              PCEP              `yaml:"pcep"`
+	GRPCServer        GRPCServer        `yaml:"grpcServer"`
+	Log               Log               `yaml:"log"`
+	TED               *TED              `yaml:"ted"`
+	GoBGP             GoBGP             `yaml:"gobgp"`
+	USidMode          bool              `yaml:"usidMode"`
+	IntentPersistence IntentPersistence `yaml:"intentPersistence"`
 }
 
 type Config struct {
@@ -136,6 +146,9 @@ func (c *Config) Validate() error {
 				errs = append(errs, errors.New("global.gobgp.grpcClient.port is required when global.ted.source is gobgp"))
 			}
 		}
+	}
+	if c.Global.IntentPersistence.Enable && c.Global.IntentPersistence.Path == "" {
+		errs = append(errs, errors.New("global.intentPersistence.path is required when global.intentPersistence.enable is true"))
 	}
 
 	return errors.Join(errs...)
