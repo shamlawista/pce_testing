@@ -280,7 +280,8 @@ global:
   intentPersistence:
     enable: true
 `,
-			wantErr: true,
+			// A missing path is no longer invalid - it resolves to
+			// defaultIntentPersistencePath. See ResolvedPath().
 		},
 		{
 			name: "intentPersistence enabled with path",
@@ -342,10 +343,12 @@ global:
 }
 
 // TestConfig_Validate_LegacyConfigWithoutIntentPersistence_StillValid pins
-// the compatibility guarantee that motivated making IntentPersistence a
-// plain (non-pointer) struct with Enable defaulting false, unlike TED:
-// validConfig has no intentPersistence section at all and must keep
-// validating with zero changes, exactly as every existing polad.yaml does.
+// the compatibility guarantee behind IntentPersistence.Enable being a
+// *bool: validConfig has no intentPersistence section at all, and must
+// both (a) keep validating with zero changes, exactly as every existing
+// polad.yaml does, and (b) resolve to enabled-by-default at the default
+// path, since that's the whole point of the pointer - distinguishing
+// "omitted" (enabled) from "explicitly disabled".
 func TestConfig_Validate_LegacyConfigWithoutIntentPersistence_StillValid(t *testing.T) {
 	path := writeConfig(t, validConfig)
 
@@ -353,11 +356,70 @@ func TestConfig_Validate_LegacyConfigWithoutIntentPersistence_StillValid(t *test
 	if err != nil {
 		t.Fatalf("unexpected read error: %v", err)
 	}
-	if c.Global.IntentPersistence.Enable {
-		t.Error("expected IntentPersistence.Enable to default to false when the section is omitted")
+	if !c.Global.IntentPersistence.Enabled() {
+		t.Error("expected IntentPersistence.Enabled() to default to true when the section is omitted")
+	}
+	if got := c.Global.IntentPersistence.ResolvedPath(); got != defaultIntentPersistencePath {
+		t.Errorf("ResolvedPath() = %q, want %q", got, defaultIntentPersistencePath)
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("unexpected validation error for a config with no intentPersistence section: %v", err)
+	}
+}
+
+func TestIntentPersistence_Enabled_ExplicitlyFalse(t *testing.T) {
+	config := `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+  intentPersistence:
+    enable: false
+`
+	path := writeConfig(t, config)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Global.IntentPersistence.Enabled() {
+		t.Error("expected Enabled() to be false when explicitly disabled")
+	}
+}
+
+func TestIntentPersistence_ResolvedPath_DefaultsWhenEmpty(t *testing.T) {
+	config := `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+  intentPersistence:
+    enable: true
+`
+	path := writeConfig(t, config)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := c.Global.IntentPersistence.ResolvedPath(); got != defaultIntentPersistencePath {
+		t.Errorf("ResolvedPath() = %q, want %q", got, defaultIntentPersistencePath)
 	}
 }
 
@@ -385,8 +447,8 @@ global:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !c.Global.IntentPersistence.Enable {
-		t.Error("expected IntentPersistence.Enable to be true")
+	if !c.Global.IntentPersistence.Enabled() {
+		t.Error("expected Enabled() to be true")
 	}
 	if c.Global.IntentPersistence.Path != "/var/lib/pola/intents.json" {
 		t.Errorf("unexpected IntentPersistence.Path: %q", c.Global.IntentPersistence.Path)

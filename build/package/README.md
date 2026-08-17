@@ -63,6 +63,12 @@ mkdir -p pola-config
 LOGDIR="$(pwd)/logs"
 mkdir -p "$LOGDIR"
 
+# Prepare the SR policy intent persistence directory for volume mount
+# (global.intentPersistence is enabled by default; skip this if you've set
+# `enable: false` in polad.yaml)
+INTENTDIR="$(pwd)/lib"
+mkdir -p "$INTENTDIR"
+
 # Create a polad configuration file
 # Reference:
 # https://github.com/nttcom/pola/blob/main/docs/sources/getting-started.md#configuration
@@ -72,14 +78,11 @@ vi "pola-config/polad.yaml"
 docker run -d --network host \
     -v "$(pwd)/pola-config:/pola" \
     -v "$LOGDIR:/var/log/pola" \
+    -v "$INTENTDIR:/var/lib/pola" \
     ghcr.io/nttcom/pola:latest
 ```
 
-If `global.intentPersistence.enable` is set in `polad.yaml`, mount its
-directory too (the default sample path is `/var/lib/pola`), the same way
-the log directory is mounted above. Otherwise SR policy intent never
-survives a container recreation - exactly the scenario that feature exists
-to survive.
+`global.intentPersistence` is enabled by default (path `/var/lib/pola/intents.json`), so the mount above is needed for it to actually survive a container recreation - exactly the scenario that feature exists for. Without it, `polad` still starts fine (a missing/unwritable directory only disables persistence for that run, logged as a warning, never fatal), it just won't remember SR policy intent across restarts. Skip the mount if you've explicitly set `enable: false`.
 
 ## Run with Bridge Network Mode
 
@@ -96,6 +99,12 @@ mkdir -p pola-config
 LOGDIR="$(pwd)/logs"
 mkdir -p "$LOGDIR"
 
+# Prepare the SR policy intent persistence directory for volume mount
+# (global.intentPersistence is enabled by default; skip this if you've set
+# `enable: false` in polad.yaml)
+INTENTDIR="$(pwd)/lib"
+mkdir -p "$INTENTDIR"
+
 # Create a polad configuration file
 # Reference:
 # https://github.com/nttcom/pola/blob/main/docs/sources/getting-started.md#configuration
@@ -105,14 +114,11 @@ vi "pola-config/polad.yaml"
 docker run -d --network pcep_net --ip <PCE Address> \
     -v "$(pwd)/pola-config:/pola" \
     -v "$LOGDIR:/var/log/pola" \
+    -v "$INTENTDIR:/var/lib/pola" \
     ghcr.io/nttcom/pola:latest
 
 # Connect the PCC container to the network
 docker network connect pcep_net <PCC container name>
 ```
 
-If `global.intentPersistence.enable` is set in `polad.yaml`, mount its
-directory too (the default sample path is `/var/lib/pola`), the same way
-the log directory is mounted above. Otherwise SR policy intent never
-survives a container recreation - exactly the scenario that feature exists
-to survive.
+`global.intentPersistence` is enabled by default (path `/var/lib/pola/intents.json`), so the mount above is needed for it to actually survive a container recreation - exactly the scenario that feature exists for. Without it, `polad` still starts fine (a missing/unwritable directory only disables persistence for that run, logged as a warning, never fatal), it just won't remember SR policy intent across restarts. Skip the mount if you've explicitly set `enable: false`.

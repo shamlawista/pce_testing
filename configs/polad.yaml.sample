@@ -17,6 +17,10 @@ global:
       address: "127.0.0.1"
       port: 50051
   usidMode: true
+  # intentPersistence is on by default (path defaults to
+  # /var/lib/pola/intents.json) even with this whole section omitted, as it
+  # is here. Uncomment only to change the path, or to opt out entirely with
+  # `enable: false`.
   # intentPersistence:
   #   enable: true
   #   path: "/var/lib/pola/intents.json"

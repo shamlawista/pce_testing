@@ -137,10 +137,11 @@
                     "properties": {
                         "enable": {
                             "type": "boolean",
-                            "default": false
+                            "default": true
                         },
                         "path": {
-                            "type": "string"
+                            "type": "string",
+                            "default": "/var/lib/pola/intents.json"
                         }
                     },
                     "additionalProperties": false

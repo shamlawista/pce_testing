@@ -55,16 +55,6 @@ func main() {
 		log.Panicf("failed to create log directory: %v", err)
 	}
 
-	// Create the SR policy intent persistence directory if it does not exist.
-	// Without this, a fresh install enabling the feature against a
-	// non-existent directory would silently never persist anything -
-	// intentStore write failures are only Warn-logged, never fatal.
-	if c.Global.IntentPersistence.Enable {
-		if err := os.MkdirAll(filepath.Dir(c.Global.IntentPersistence.Path), 0755); err != nil {
-			log.Panicf("failed to create intent persistence directory: %v", err)
-		}
-	}
-
 	// Open log file
 	fp, err := os.OpenFile(c.Global.Log.Path+c.Global.Log.Name, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
@@ -88,6 +78,22 @@ func main() {
 	if c.Global.TED.Enable && c.Global.TED.ASN == 0 {
 		logger.Panic("TED is enabled but Global.TED.ASN is missing or invalid")
 		log.Panic("TED is enabled but Global.TED.ASN is missing or invalid")
+	}
+
+	// Create the SR policy intent persistence directory if it does not
+	// exist. Enabled by default, so unlike the log directory above, a
+	// failure here must not be fatal - it would turn a permissions/path
+	// problem on an incidental feature into a startup crash for every
+	// deployment. Disable persistence for this run instead and keep going;
+	// intentStore write failures are handled the same way at runtime.
+	intentPersistenceEnabled := c.Global.IntentPersistence.Enabled()
+	intentPersistencePath := c.Global.IntentPersistence.ResolvedPath()
+	if intentPersistenceEnabled {
+		if err := os.MkdirAll(filepath.Dir(intentPersistencePath), 0755); err != nil {
+			logger.Warn("failed to create intent persistence directory, disabling persistence for this run",
+				zap.String("path", intentPersistencePath), zap.Error(err))
+			intentPersistenceEnabled = false
+		}
 	}
 
 	// Prepare TED update tools
@@ -127,8 +133,8 @@ func main() {
 		ASN:                     c.Global.TED.ASN,
 		FRRPeers:                frrPeers,
 		NokiaPeers:              nokiaPeers,
-		IntentPersistenceEnable: c.Global.IntentPersistence.Enable,
-		IntentPersistencePath:   c.Global.IntentPersistence.Path,
+		IntentPersistenceEnable: intentPersistenceEnabled,
+		IntentPersistencePath:   intentPersistencePath,
 	}
 	if serverErr := server.NewPCE(o, logger, tedElemsChan); serverErr.Error != nil {
 		logger.Panic("Failed to start new server", zap.String("server", serverErr.Server), zap.Error(serverErr.Error))

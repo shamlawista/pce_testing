@@ -53,13 +53,35 @@ type TED struct {
 	Source string `yaml:"source"`
 }
 
+// defaultIntentPersistencePath is used whenever IntentPersistence.Path is
+// unset, whether the whole section was omitted or Path was simply left
+// blank.
+const defaultIntentPersistencePath = "/var/lib/pola/intents.json"
+
 // IntentPersistence configures durable storage of SR policy intent
-// (type/metric) so it survives a polad restart. Unlike TED, this section
-// is optional: omitting it entirely leaves Enable false, so existing
-// polad.yaml files need no changes.
+// (type/metric) so it survives a polad restart. Enabled by default -
+// Enable is a *bool (like Global.TED) specifically so "omitted from the
+// config" and "explicitly set to false" are distinguishable; only the
+// latter turns it off. Existing polad.yaml files with no intentPersistence
+// section at all get the feature on, at defaultIntentPersistencePath.
 type IntentPersistence struct {
-	Enable bool   `yaml:"enable"`
+	Enable *bool  `yaml:"enable"`
 	Path   string `yaml:"path"`
+}
+
+// Enabled reports whether intent persistence should be active: true unless
+// explicitly disabled with `enable: false`.
+func (ip IntentPersistence) Enabled() bool {
+	return ip.Enable == nil || *ip.Enable
+}
+
+// ResolvedPath returns Path, falling back to defaultIntentPersistencePath
+// when it's unset.
+func (ip IntentPersistence) ResolvedPath() string {
+	if ip.Path != "" {
+		return ip.Path
+	}
+	return defaultIntentPersistencePath
 }
 
 type Global struct {
@@ -146,9 +168,6 @@ func (c *Config) Validate() error {
 				errs = append(errs, errors.New("global.gobgp.grpcClient.port is required when global.ted.source is gobgp"))
 			}
 		}
-	}
-	if c.Global.IntentPersistence.Enable && c.Global.IntentPersistence.Path == "" {
-		errs = append(errs, errors.New("global.intentPersistence.path is required when global.intentPersistence.enable is true"))
 	}
 
 	return errors.Join(errs...)
