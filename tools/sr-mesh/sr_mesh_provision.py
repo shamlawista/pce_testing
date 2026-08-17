@@ -12,6 +12,14 @@ after a polad restart wipes learned policies.
 
 Does not modify polad/pola; it only shells out to the existing `pola` CLI.
 
+Note: there is no companion reoptimize script here anymore. polad itself now
+watches the TED live and re-signals any `type: dynamic` policy whose CSPF
+path changes (pkg/server: Session.reoptimizeDynamicPolicies /
+Server.reoptimizeDynamicPolicies), which superseded the external daemon that
+used to live in this directory. This script still has a job because polad
+has no auto-mesh feature - re-run it whenever new PCEP sessions or TED nodes
+should be covered by the mesh.
+
 Usage:
     python3 sr_mesh_provision.py --port 50052
 """
