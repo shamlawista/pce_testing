@@ -576,7 +576,7 @@ func (m *PCInitiateMessage) Serialize() ([]uint8, error) {
 	var bytePCInitiateMessage []uint8
 	if m.AssociationBeforeERO {
 		bytePCInitiateMessage = AppendByteSlices(
-			bytePCInitiateHeader, byteSrpObject, byteLSPObject, byteAssociationObject, byteEndpointsObject, byteEroObject, byteVendorInformationObject,
+			bytePCInitiateHeader, byteSrpObject, byteLSPObject, byteEndpointsObject, byteAssociationObject, byteEroObject, byteVendorInformationObject,
 		)
 	} else {
 		bytePCInitiateMessage = AppendByteSlices(

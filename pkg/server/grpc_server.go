@@ -308,6 +308,17 @@ func (s *APIServer) CreateSRPolicy(ctx context.Context, req *pb.CreateSRPolicyRe
 		return nil, fmt.Errorf("failed to build segment list: %w", err)
 	}
 
+	// Backstop: every buildSegmentList branch is expected to error rather than
+	// return incomplete data, but a single bad request must never get to send a
+	// PCInitiate with a missing endpoint or an empty path - a strict PCC (e.g.
+	// Nokia) will drop the whole PCEP session over a single malformed message,
+	// taking every other policy on that session down with it.
+	if !srcAddr.IsValid() || !dstAddr.IsValid() || len(segmentList) == 0 {
+		return nil, status.Errorf(codes.Internal,
+			"refusing to send an incomplete PCInitiate: srcAddr=%v dstAddr=%v segmentCount=%d (src=%s dst=%s)",
+			srcAddr, dstAddr, len(segmentList), req.GetSrPolicy().GetSrcRouterId(), req.GetSrPolicy().GetDstRouterId())
+	}
+
 	if err := s.validateSIDs(req, segmentList); err != nil {
 		return nil, err
 	}

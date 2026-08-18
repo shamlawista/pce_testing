@@ -287,8 +287,18 @@ func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
 			classes := objectClassSequence(t, raw[CommonHeaderLength:])
 			assocIdx := indexOfClass(classes, ObjectClassAssociation)
 			eroIdx := indexOfClass(classes, ObjectClassERO)
+			endpointsIdx := indexOfClass(classes, ObjectClassEndpoints)
 			require.GreaterOrEqual(t, assocIdx, 0, "ASSOCIATION object not found in wire bytes: classes=%v", classes)
 			require.GreaterOrEqual(t, eroIdx, 0, "ERO object not found in wire bytes: classes=%v", classes)
+			require.GreaterOrEqual(t, endpointsIdx, 0, "END-POINTS object not found in wire bytes: classes=%v", classes)
+
+			// Regression guard: an earlier AssociationBeforeERO reordering moved
+			// ASSOCIATION ahead of END-POINTS too, displacing END-POINTS from its
+			// RFC 5440 position (right after LSP, before everything else). A live
+			// Nokia 7750 rejected that as "ObjClass 4 ObjType 1 out of order" and
+			// closed the session. END-POINTS must precede ASSOCIATION regardless
+			// of where ASSOCIATION sits relative to ERO.
+			assert.Less(t, endpointsIdx, assocIdx, "expected END-POINTS before ASSOCIATION")
 
 			if tt.wantAssocBeforeEro {
 				assert.Less(t, assocIdx, eroIdx, "expected ASSOCIATION before ERO")
