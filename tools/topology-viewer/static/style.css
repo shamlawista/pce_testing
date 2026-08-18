@@ -19,6 +19,14 @@ html, body { height: 100%; margin: 0; font-family: -apple-system, Segoe UI, Robo
 }
 #topbar button:hover { background: #3a4f63; }
 
+#search-box { display: flex; align-items: center; gap: 8px; }
+#search {
+  background: #0f1720; color: #eee; border: 1px solid #46586b;
+  border-radius: 4px; padding: 6px 10px; font-size: 13px; width: 260px;
+}
+#search:focus { outline: none; border-color: #5a8dee; }
+#searchResults { font-size: 12px; color: #b7c2cf; white-space: nowrap; }
+
 main { display: flex; height: calc(100% - 52px); }
 #graph { flex: 1; background: #0f1720; }
 #sidebar {
@@ -62,6 +70,7 @@ main { display: flex; height: calc(100% - 52px); }
 }
 #legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 #legend .dot.session { background: #ff8a3d; }
+#legend .dot.search { background: transparent; border: 3px solid #c9e64d; width: 6px; height: 6px; }
 #legend .dot.sr { background: #5a8dee; }
 #legend .dot.no-sr { background: #6b7684; }
 #legend .line { display: inline-block; width: 20px; height: 3px; margin-right: 6px; vertical-align: middle; }

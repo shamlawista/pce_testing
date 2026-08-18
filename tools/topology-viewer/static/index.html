@@ -14,6 +14,10 @@
       <span id="updatedAt">not yet polled</span>
       <span id="pollError" class="error"></span>
     </div>
+    <div id="search-box">
+      <input id="search" type="text" placeholder="Search name, System-ID, or SID prefix…" autocomplete="off">
+      <span id="searchResults"></span>
+    </div>
     <button id="clearHighlight">Clear highlight</button>
     <button id="relayout">Re-layout</button>
   </header>
@@ -36,6 +40,7 @@
     <div><span class="dot sr"></span> SR-capable node</div>
     <div><span class="dot no-sr"></span> non-SR-capable node</div>
     <div><span class="line highlighted"></span> highlighted LSP path</div>
+    <div><span class="dot search"></span> search match</div>
   </div>
 
   <script src="/app.js"></script>

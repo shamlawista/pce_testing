@@ -18,6 +18,7 @@ const cy = cytoscape({
     { selector: "node[?srCapable]", style: { "background-color": "#5a8dee" } },
     { selector: "node[?isSession]", style: { "background-color": "#ff8a3d", "border-color": "#ffb37a", "width": 34, "height": 34 } },
     { selector: "node.highlighted", style: { "border-color": "#ff8a3d", "border-width": 4 } },
+    { selector: "node.search-match", style: { "border-color": "#c9e64d", "border-width": 4 } },
     { selector: "node.dimmed", style: { "opacity": 0.25 } },
     { selector: "edge", style: {
         "width": 2, "line-color": "#3a4657", "curve-style": "bezier",
@@ -35,6 +36,7 @@ let latestNodesById = {};
 let selectedNodeId = null;
 let activePolicyName = null;
 let layoutRan = false;
+let searchQuery = "";
 
 function nodeDisplayLabel(n) {
   const sid = n.sid !== null && n.sid !== undefined ? ` (${n.sid})` : "";
@@ -76,6 +78,10 @@ async function poll() {
       clearSelection();
     }
   }
+
+  // Newly-added nodes/edges start with no classes, so a node that now
+  // matches the active search wouldn't get highlighted until re-applied.
+  if (searchQuery) applySearch(searchQuery);
 }
 
 function updateGraph(graph) {
@@ -184,8 +190,41 @@ function clearSelection() {
   clearHighlight();
 }
 
-function highlightPolicy(policy) {
+function nodeMatchesSearch(node, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  if (node.label.toLowerCase().includes(q)) return true;
+  if (node.id.toLowerCase().includes(q)) return true;
+  if (node.sid !== null && node.sid !== undefined && String(node.sid).startsWith(q)) return true;
+  return false;
+}
+
+function applySearch(query) {
+  searchQuery = query;
   clearHighlightStyles();
+  activePolicyName = null;
+
+  const resultsEl = document.getElementById("searchResults");
+  if (!query.trim()) {
+    resultsEl.textContent = "";
+    return;
+  }
+
+  const matches = cy.nodes().filter(n => nodeMatchesSearch(n.data(), query));
+  matches.addClass("search-match");
+  cy.elements().not(matches).addClass("dimmed");
+
+  resultsEl.textContent = matches.length
+    ? `${matches.length} match${matches.length === 1 ? "" : "es"}`
+    : "no matches";
+
+  if (matches.length) cy.fit(matches, 80);
+
+  if (selectedNodeId) renderSidebar(selectedNodeId);
+}
+
+function highlightPolicy(policy) {
+  clearHighlight();
   activePolicyName = policy.policyName;
 
   const pathNodeIds = new Set(policy.path || []);
@@ -207,12 +246,15 @@ function highlightPolicy(policy) {
 }
 
 function clearHighlightStyles() {
-  cy.elements().removeClass("highlighted dimmed");
+  cy.elements().removeClass("highlighted dimmed search-match");
 }
 
 function clearHighlight() {
   activePolicyName = null;
   clearHighlightStyles();
+  document.getElementById("search").value = "";
+  searchQuery = "";
+  document.getElementById("searchResults").textContent = "";
 }
 
 cy.on("tap", "node", evt => renderSidebar(evt.target.id()));
@@ -222,6 +264,12 @@ cy.on("tap", evt => {
 
 document.getElementById("clearHighlight").addEventListener("click", clearHighlight);
 document.getElementById("relayout").addEventListener("click", () => runLayout(true));
+
+const searchInput = document.getElementById("search");
+searchInput.addEventListener("input", () => applySearch(searchInput.value));
+searchInput.addEventListener("keydown", evt => {
+  if (evt.key === "Escape") clearHighlight();
+});
 
 poll();
 setInterval(poll, POLL_INTERVAL_MS);
