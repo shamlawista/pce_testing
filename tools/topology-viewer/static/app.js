@@ -10,6 +10,8 @@ const cy = cytoscape({
         "font-size": 10,
         "text-valign": "bottom",
         "text-margin-y": 4,
+        "text-outline-width": 2,
+        "text-outline-color": "#0f1720",
         "width": 26, "height": 26,
         "border-width": 2, "border-color": "#0f1720",
       } },
@@ -22,8 +24,7 @@ const cy = cytoscape({
         "target-arrow-shape": "none", "opacity": 0.9,
       } },
     { selector: "edge.highlighted", style: {
-        "line-color": "#ff8a3d", "width": 5, "target-arrow-color": "#ff8a3d",
-        "target-arrow-shape": "triangle", "z-index": 10,
+        "line-color": "#ff8a3d", "width": 5, "z-index": 10,
       } },
     { selector: "edge.dimmed", style: { "opacity": 0.12 } },
   ],
@@ -58,8 +59,11 @@ async function poll() {
   document.getElementById("updatedAt").textContent = data.updatedAt
     ? `updated ${new Date(data.updatedAt * 1000).toLocaleTimeString()}`
     : "not yet polled";
+  const srCapableCount = data.graph.nodes.filter(n => n.srCapable).length;
+  const nonSrCount = data.graph.nodes.length - srCapableCount;
   document.getElementById("counts").textContent =
-    `${data.graph.nodes.length} node(s), ${data.graph.edges.length} link(s), ${data.policies.length} polic(y/ies)`;
+    `${data.graph.nodes.length} node(s) (${srCapableCount} SR-capable, ${nonSrCount} non-SR), `
+    + `${data.graph.edges.length} link(s), ${data.policies.length} polic(y/ies)`;
 
   latestPolicies = data.policies;
   latestNodesById = Object.fromEntries(data.graph.nodes.map(n => [n.id, n]));
@@ -108,12 +112,24 @@ function updateGraph(graph) {
   });
 
   if (!layoutRan || addedAny) {
-    runLayout();
+    runLayout(!layoutRan);
   }
 }
 
-function runLayout() {
-  cy.layout({ name: "cose", animate: false, randomize: !layoutRan, padding: 60 }).run();
+function runLayout(randomize) {
+  cy.layout({
+    name: "cose",
+    animate: false,
+    randomize,
+    padding: 60,
+    // Without this, cose only avoids overlapping the small node circles and
+    // ignores label size entirely - labels stack on top of each other once
+    // there are more than a handful of nodes.
+    nodeDimensionsIncludeLabels: true,
+    idealEdgeLength: 120,
+    nodeRepulsion: 700000,
+    numIter: 2000,
+  }).run();
   layoutRan = true;
 }
 
@@ -205,7 +221,7 @@ cy.on("tap", evt => {
 });
 
 document.getElementById("clearHighlight").addEventListener("click", clearHighlight);
-document.getElementById("relayout").addEventListener("click", () => cy.layout({ name: "cose", animate: false, randomize: true, padding: 60 }).run());
+document.getElementById("relayout").addEventListener("click", () => runLayout(true));
 
 poll();
 setInterval(poll, POLL_INTERVAL_MS);
