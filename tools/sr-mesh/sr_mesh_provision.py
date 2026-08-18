@@ -33,6 +33,7 @@ from mesh_lib import (
     PolaCLI,
     PolaCLIError,
     build_desired_mesh,
+    build_label_map,
     resolve_pola_bin,
     resolve_session_nodes,
     sr_capable_nodes,
@@ -116,7 +117,8 @@ def main() -> None:
         len(ted_nodes), len(sr_nodes), skipped_non_sr,
     )
 
-    desired = build_desired_mesh(resolved, sr_nodes, args.asn, args.color, args.metric, args.name_prefix)
+    label_map = build_label_map(ted_nodes)
+    desired = build_desired_mesh(resolved, sr_nodes, args.asn, args.color, args.metric, args.name_prefix, label_map, log)
     log.info("full mesh requires %d ordered policy pair(s)", len(desired))
 
     try:

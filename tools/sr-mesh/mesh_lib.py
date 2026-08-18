@@ -32,9 +32,35 @@ def sanitize_name(value: str) -> str:
     return value.replace(".", "-").replace(":", "-").strip("-")
 
 
-def node_label(node: dict) -> str:
-    hostname = (node.get("hostname") or "").strip()
-    return sanitize_name(hostname) if hostname else sanitize_name(node["routerID"])
+def build_label_map(ted_nodes: list[dict]) -> dict[str, str]:
+    """Map each node's routerID to a unique, human-readable policy-name label.
+
+    Prefers the advertised hostname, but ISIS/BGP-LS hostnames are not
+    protocol-guaranteed unique -- duplicate or default hostnames (unconfigured
+    sysname, cloned configs, lab defaults) are common in practice. Since the
+    policy name is the *only* identity key used for idempotency (skip-if-
+    already-exists) and for matching installed vs. desired state, a hostname
+    collision would make two different destinations produce the same policy
+    name -- silently clobbering one LSP with the other's segment list on the
+    second `sr-policy add` call for that name. Any hostname shared by more
+    than one node in this TED snapshot therefore falls back to the routerID
+    (the TED's actual primary key, always unique) for every node sharing it.
+    """
+    hostname_counts: dict[str, int] = {}
+    for node in ted_nodes:
+        hostname = (node.get("hostname") or "").strip()
+        if hostname:
+            hostname_counts[hostname] = hostname_counts.get(hostname, 0) + 1
+
+    labels = {}
+    for node in ted_nodes:
+        router_id = node["routerID"]
+        hostname = (node.get("hostname") or "").strip()
+        if hostname and hostname_counts[hostname] == 1:
+            labels[router_id] = sanitize_name(hostname)
+        else:
+            labels[router_id] = sanitize_name(router_id)
+    return labels
 
 
 def node_is_sr_capable(node: dict) -> bool:
@@ -118,26 +144,49 @@ def build_desired_mesh(
     color: int,
     metric: str,
     name_prefix: str,
+    label_map: dict[str, str],
+    log,
 ) -> list[MeshPolicy]:
-    """Every ordered (session, destination) pair, excluding self-policies."""
-    policies = []
+    """Every ordered (session, destination) pair, excluding self-policies.
+
+    label_map (see build_label_map) makes collisions rare but not provably
+    impossible (e.g. two routerIDs that happen to sanitize to the same
+    string). As a last line of defense, any pair whose generated name still
+    collides with another pair on the same session is dropped -- all of the
+    colliding pairs, not just the "extra" one -- and logged loudly, rather
+    than silently letting one clobber the other via a repeated `sr-policy
+    add` call under the same name.
+    """
+    seen: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    policies_by_key: dict[tuple[str, str], MeshPolicy] = {}
     for session, src_node in resolved_sessions:
-        src_label = node_label(src_node)
+        src_label = label_map[src_node["routerID"]]
         for dst_node in dst_nodes:
             if dst_node["routerID"] == src_node["routerID"]:
                 continue
-            name = f"{name_prefix}-{src_label}-{node_label(dst_node)}"
-            policies.append(
-                MeshPolicy(
-                    session_addr=session["Addr"],
-                    src_router_id=src_node["routerID"],
-                    dst_router_id=dst_node["routerID"],
-                    name=name,
-                    asn=asn,
-                    color=color,
-                    metric=metric,
-                )
+            name = f"{name_prefix}-{src_label}-{label_map[dst_node['routerID']]}"
+            key = (session["Addr"], name)
+            seen.setdefault(key, []).append((src_node["routerID"], dst_node["routerID"]))
+            policies_by_key[key] = MeshPolicy(
+                session_addr=session["Addr"],
+                src_router_id=src_node["routerID"],
+                dst_router_id=dst_node["routerID"],
+                name=name,
+                asn=asn,
+                color=color,
+                metric=metric,
             )
+
+    policies = []
+    for key, pairs in seen.items():
+        if len(pairs) > 1:
+            log.error(
+                "policy name %r on session %s is ambiguous -- %d distinct (src, dst) router-ID pairs "
+                "produced it (%s); skipping all of them rather than risking one silently overwriting another",
+                key[1], key[0], len(pairs), pairs,
+            )
+            continue
+        policies.append(policies_by_key[key])
     return policies
 
 
