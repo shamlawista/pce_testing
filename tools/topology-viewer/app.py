@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import threading
 import time
@@ -31,6 +32,26 @@ from topology import build_graph, enrich_policies
 log = logging.getLogger("topology_viewer")
 
 STATIC_DIR = Path(__file__).parent / "static"
+DEFAULT_NAME_OVERRIDES_PATH = Path(__file__).parent / "router_names.json"
+
+
+def load_name_overrides(path: Path) -> dict:
+    """routerID -> display name, for labs where BGP-LS isn't advertising a
+    hostname at all (see router_names.json / topology.build_label_map).
+    Missing file is normal (not every lab has one); a malformed one is
+    logged and treated as empty rather than crashing the whole app.
+    """
+    if not path.exists():
+        return {}
+    try:
+        overrides = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("could not read name overrides from %s: %s", path, e)
+        return {}
+    if not isinstance(overrides, dict):
+        log.warning("name overrides file %s must be a JSON object of routerID -> name, ignoring", path)
+        return {}
+    return overrides
 
 
 class Snapshot:
@@ -60,7 +81,7 @@ class Snapshot:
             return dict(self._graph), list(self._policies), self._updated_at, self._error
 
 
-def poll_loop(client: PolaClient, snapshot: Snapshot, interval: float, stop_event: threading.Event):
+def poll_loop(client: PolaClient, snapshot: Snapshot, interval: float, stop_event: threading.Event, name_overrides: dict):
     while not stop_event.is_set():
         try:
             ted_nodes = client.ted()
@@ -79,7 +100,7 @@ def poll_loop(client: PolaClient, snapshot: Snapshot, interval: float, stop_even
                 if router_id:
                     session_router_ids.add(router_id)
 
-            graph = build_graph(ted_nodes, session_router_ids)
+            graph = build_graph(ted_nodes, session_router_ids, name_overrides)
             policies = enrich_policies(policies_by_session, ted_nodes)
             snapshot.set(graph, policies)
             log.info("poll ok: %d node(s), %d edge(s), %d polic(y/ies)",
@@ -91,19 +112,28 @@ def poll_loop(client: PolaClient, snapshot: Snapshot, interval: float, stop_even
         stop_event.wait(interval)
 
 
-def build_mock_snapshot() -> Snapshot:
-    from mock_data import build_mock_policies, build_mock_sessions, build_mock_ted
+def build_mock_snapshot(node_count: int | None = None, name_overrides: dict | None = None) -> Snapshot:
+    if node_count:
+        from mock_data import build_large_mock_policies, build_large_mock_sessions, build_large_mock_ted
+
+        ted_nodes = build_large_mock_ted(node_count)["ted"]
+        sessions = build_large_mock_sessions(node_count)
+        policies_by_session = build_large_mock_policies(ted_nodes, sessions)
+    else:
+        from mock_data import build_mock_policies, build_mock_sessions, build_mock_ted
+
+        ted_nodes = build_mock_ted()["ted"]
+        sessions = build_mock_sessions()
+        policies_by_session = build_mock_policies()
 
     snapshot = Snapshot()
-    ted_nodes = build_mock_ted()["ted"]
-    sessions = build_mock_sessions()
     session_addrs = {s["Addr"] for s in sessions}
     session_router_ids = {
         n["routerID"] for n in ted_nodes
         if any(p.get("prefix", "").split("/")[0] in session_addrs for p in n.get("prefixes", []))
     }
-    graph = build_graph(ted_nodes, session_router_ids)
-    policies = enrich_policies(build_mock_policies(), ted_nodes)
+    graph = build_graph(ted_nodes, session_router_ids, name_overrides)
+    policies = enrich_policies(policies_by_session, ted_nodes)
     snapshot.set(graph, policies)
     return snapshot
 
@@ -141,6 +171,14 @@ def parse_args():
     p.add_argument("--listen-host", default="0.0.0.0", help="web UI bind address (default: 0.0.0.0)")
     p.add_argument("--listen-port", type=int, default=8080, help="web UI port (default: 8080)")
     p.add_argument("--mock", action="store_true", help="serve synthetic demo data instead of polling a live polad")
+    p.add_argument("--mock-nodes", type=int, default=None,
+                    help="with --mock, generate a synthetic ring-plus-chords topology with this many nodes "
+                         "instead of the small built-in 6-node example (useful for checking layout/label "
+                         "behavior at a realistic node count)")
+    p.add_argument("--name-overrides", default=str(DEFAULT_NAME_OVERRIDES_PATH),
+                    help="path to a JSON object mapping routerID -> display name, for labs where BGP-LS "
+                         f"isn't advertising a hostname at all (default: {DEFAULT_NAME_OVERRIDES_PATH.name} "
+                         "next to this script, if present)")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
 
@@ -150,9 +188,13 @@ def main():
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                          format="%(asctime)s %(levelname)-7s %(message)s")
 
+    name_overrides = load_name_overrides(Path(args.name_overrides))
+    if name_overrides:
+        log.info("loaded %d name override(s) from %s", len(name_overrides), args.name_overrides)
+
     if args.mock:
         log.info("running with synthetic mock data (--mock); no pola/polad required")
-        snapshot = build_mock_snapshot()
+        snapshot = build_mock_snapshot(args.mock_nodes, name_overrides)
         app = create_app(snapshot)
         app.run(host=args.listen_host, port=args.listen_port)
         return
@@ -161,7 +203,7 @@ def main():
     client = PolaClient(args.pola_bin, args.host, args.port)
     stop_event = threading.Event()
     poll_thread = threading.Thread(
-        target=poll_loop, args=(client, snapshot, args.interval, stop_event), daemon=True,
+        target=poll_loop, args=(client, snapshot, args.interval, stop_event, name_overrides), daemon=True,
     )
     poll_thread.start()
 

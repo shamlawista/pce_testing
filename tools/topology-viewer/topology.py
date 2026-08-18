@@ -10,15 +10,22 @@ def sanitize_name(value: str) -> str:
     return value.replace(".", "-").replace(":", "-").strip("-")
 
 
-def build_label_map(ted_nodes: list[dict]) -> dict[str, str]:
+def build_label_map(ted_nodes: list[dict], name_overrides: dict | None = None) -> dict[str, str]:
     """Map each node's routerID to a unique, human-readable display label.
 
-    Prefers the advertised hostname, falling back to routerID for any
-    hostname shared by more than one node in this TED snapshot (ISIS/BGP-LS
-    hostnames aren't protocol-guaranteed unique - see tools/sr-mesh/mesh_lib.py
-    for the incident this guards against: two different nodes with the same
-    hostname would otherwise be indistinguishable in the UI).
+    Priority order:
+      1. name_overrides[routerID], if given - a hand-maintained routerID ->
+         name table (see router_names.json), for labs where BGP-LS simply
+         isn't advertising a hostname at all (not every lab enables the
+         ISIS dynamic hostname TLV), so there's nothing for (2) to prefer.
+      2. The advertised hostname, unless it's shared by more than one node
+         in this TED snapshot (ISIS/BGP-LS hostnames aren't
+         protocol-guaranteed unique - see tools/sr-mesh/mesh_lib.py for the
+         incident this guards against).
+      3. The routerID itself.
     """
+    name_overrides = name_overrides or {}
+
     hostname_counts: dict[str, int] = {}
     for node in ted_nodes:
         hostname = (node.get("hostname") or "").strip()
@@ -28,6 +35,9 @@ def build_label_map(ted_nodes: list[dict]) -> dict[str, str]:
     labels = {}
     for node in ted_nodes:
         router_id = node["routerID"]
+        if router_id in name_overrides:
+            labels[router_id] = name_overrides[router_id]
+            continue
         hostname = (node.get("hostname") or "").strip()
         if hostname and hostname_counts[hostname] == 1:
             labels[router_id] = hostname
@@ -113,9 +123,9 @@ def dedupe_edges(ted_nodes: list[dict]) -> list[dict]:
     return list(edges.values())
 
 
-def build_graph(ted_nodes: list[dict], session_router_ids: set[str]) -> dict:
+def build_graph(ted_nodes: list[dict], session_router_ids: set[str], name_overrides: dict | None = None) -> dict:
     """Build the {nodes, edges} JSON shape the frontend graph library consumes."""
-    labels = build_label_map(ted_nodes)
+    labels = build_label_map(ted_nodes, name_overrides)
     nodes = []
     for node in ted_nodes:
         router_id = node["routerID"]

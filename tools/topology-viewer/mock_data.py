@@ -61,6 +61,88 @@ def build_mock_ted():
     return {"ted": [pe1, p1, p2, pe2, pe3, p3_no_sr]}
 
 
+def _session_indices(n, session_count=3):
+    return list(range(0, n, max(1, n // session_count)))[:session_count]
+
+
+def build_large_mock_ted(n=37):
+    """A ring-plus-chords topology with n nodes, scaled to roughly match a
+    real full-mesh lab (some non-SR nodes mixed in, a few PCEP sessions) -
+    for visually checking layout/label behavior at a realistic node count
+    without needing a live polad.
+    """
+    session_idx = set(_session_indices(n))
+    nodes = []
+    for i in range(n):
+        router_id = f"2131.1919.{2000 + i}"
+        # A real PCEP session's own router always has a Node SID - CSPF can't
+        # even compute a path without one for the source (see
+        # pkg/cspf/cspf.go's initNodeMap). Every 3rd *non-session* node is
+        # marked non-SR instead, so this never collides with a session index.
+        if i % 3 == 0 and i not in session_idx:
+            node = {
+                "asn": 65000, "routerID": router_id, "isisAreaID": "490000",
+                "hostname": "", "srgbBegin": 0, "srgbEnd": 0,
+                "prefixes": [{"prefix": f"10.255.{i}.1/32"}], "links": [], "srv6SIDs": [],
+            }
+        else:
+            node = _node(router_id, "", i, f"10.255.{i}.1")
+        nodes.append(node)
+
+    for i in range(n):
+        _link(nodes[i], nodes[(i + 1) % n], f"10.0.{i}.1", f"10.0.{i}.2", 10, 30000 + i, 30500 + i)
+        if i % 4 == 0:
+            j = (i + 5) % n
+            _link(nodes[i], nodes[j], f"10.1.{i}.1", f"10.1.{i}.2", 20, 31000 + i, 31500 + i)
+
+    return {"ted": nodes}
+
+
+def build_large_mock_sessions(n=37, session_count=3):
+    return [
+        {
+            "Addr": f"10.255.{i}.1",
+            "State": "SESSION_STATE_UP",
+            "Capabilities": [{"Type": "STATEFUL", "Detail": {"LSPUpdate": True, "Color": True}}],
+            "IsSynced": True,
+        }
+        for i in _session_indices(n, session_count)
+    ]
+
+
+def build_large_mock_policies(ted_nodes, sessions):
+    """A handful of dynamic policies per session, to nodes a few hops away,
+    just enough to exercise the sidebar/highlight UI at this scale."""
+    session_router = {n["routerID"]: n for n in ted_nodes if any(
+        p.get("prefix", "").startswith(s["Addr"] + "/") for s in sessions for p in n.get("prefixes", [])
+    )}
+    policies = []
+    for addr_node in session_router.values():
+        src_id = addr_node["routerID"]
+        src_addr = next(p["prefix"].split("/")[0] for p in addr_node["prefixes"])
+        peer_policies = []
+        for offset in (2, 5, 9):
+            idx = (int(src_id.rsplit(".", 1)[-1]) - 2000 + offset) % len(ted_nodes)
+            dst_node = ted_nodes[idx]
+            if dst_node["routerID"] == src_id or not is_sr_capable_node(dst_node):
+                continue
+            dst_addr = next((p["prefix"].split("/")[0] for p in dst_node["prefixes"]), None)
+            peer_policies.append({
+                "plspId": offset, "policyName": f"mesh-{src_id.replace('.', '-')}-{dst_node['routerID'].replace('.', '-')}",
+                "segmentList": [{"sid": 20000 + idx}],
+                "srcAddr": src_addr, "dstAddr": dst_addr,
+                "srcRouterId": src_id, "dstRouterId": dst_node["routerID"],
+                "color": 100, "preference": 100, "lspId": offset, "state": "up",
+                "type": "dynamic", "metric": "igp",
+            })
+        policies.append({"peerAddr": src_addr, "srPolicies": peer_policies})
+    return policies
+
+
+def is_sr_capable_node(node):
+    return bool(node.get("srgbBegin")) and any("sidIndex" in p for p in node.get("prefixes", []))
+
+
 def build_mock_sessions():
     return [
         {

@@ -1,7 +1,7 @@
 """Plain assert-based smoke tests for topology.py, run directly with
 `python test_topology.py` - no pytest dependency required for this
 standalone tool."""
-from mock_data import build_mock_ted, build_mock_policies
+from mock_data import build_large_mock_sessions, build_large_mock_ted, build_mock_ted, build_mock_policies
 from topology import (
     build_adjacency_index,
     build_graph,
@@ -40,6 +40,28 @@ assert labels[PE3] == PE3, f"expected routerID fallback for duplicate hostname, 
 assert labels["0000.0000.0099"] == "0000.0000.0099"
 assert labels[PE1] == "PE1", "unique hostname should still be used"
 print("build_label_map duplicate-hostname fallback: OK")
+
+# --- build_label_map: name_overrides take priority over hostname, and
+# apply even when the TED node itself has no hostname at all ---
+overridden = build_label_map(ted, name_overrides={PE1: "OVERRIDE-NAME", P3_LEGACY: "P3-RENAMED"})
+assert overridden[PE1] == "OVERRIDE-NAME", "override should win even when a valid unique hostname exists"
+assert overridden[P3_LEGACY] == "P3-RENAMED", "override should apply to a node with no hostname of its own"
+assert overridden[P1] == "P1", "nodes without an override still fall back to hostname/routerID as before"
+print("build_label_map name_overrides priority: OK", overridden)
+
+# --- regression: large mock's session nodes must always be SR-capable
+# (a source without a Node SID is a hard CSPF error - see
+# pkg/cspf/cspf.go's initNodeMap) - this broke once when the "every 3rd
+# node is non-SR" rule happened to land on every session index ---
+for n in (12, 24, 37):
+    large_ted = build_large_mock_ted(n)["ted"]
+    large_by_id = {node["routerID"]: node for node in large_ted}
+    session_addrs = {s["Addr"] for s in build_large_mock_sessions(n)}
+    for node in large_ted:
+        is_session = any(p["prefix"].split("/")[0] in session_addrs for p in node.get("prefixes", []))
+        if is_session:
+            assert is_sr_capable(node), f"session node {node['routerID']} (n={n}) must be SR-capable"
+print("build_large_mock_ted: session nodes always SR-capable, n=12/24/37: OK")
 
 # --- dedupe_edges: 6 bidirectional link pairs -> 6 undirected edges, not 12 ---
 edges = dedupe_edges(ted)
