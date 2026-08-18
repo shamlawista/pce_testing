@@ -206,8 +206,7 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 		},
 		"NokiaLegacy": {
 			pccType:         NokiaLegacy,
-			wantAssociation: true,
-			wantAssocType:   AssociationTypeSRPolicyAssociation,
+			wantAssociation: false,
 			wantVendorInfo:  false,
 		},
 	}
@@ -234,30 +233,20 @@ func TestNewPCInitiateMessage_VendorObjectSelection(t *testing.T) {
 			}
 
 			if tt.pccType == NokiaLegacy {
-				require.NotNil(t, m.AssociationObject)
-				var hasExtendedAssocID, hasCpathID, hasCpathPreference bool
-				for _, tlv := range m.AssociationObject.TLVs {
-					switch tlv.(type) {
-					case *ExtendedAssociationID:
-						hasExtendedAssocID = true
-					case *SRPolicyCandidatePathIdentifier:
-						hasCpathID = true
-					case *SRPolicyCandidatePathPreference:
-						hasCpathPreference = true
-					}
-				}
-				assert.True(t, hasExtendedAssocID, "NokiaLegacy ASSOCIATION object should keep EXTENDED-ASSOCIATION-ID for color/endpoint")
-				assert.False(t, hasCpathID, "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-ID (RFC 9862)")
-				assert.False(t, hasCpathPreference, "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-PREFERENCE (RFC 9862)")
+				assert.Nil(t, m.AssociationObject,
+					"NokiaLegacy must not carry an ASSOCIATION object at all - a live Nokia 7750 (SR OS "+
+						"26.7.R1) rejects PCInitiate with \"ObjClass 40 ObjType 1 out of order\" whether "+
+						"ASSOCIATION is placed before or after ERO, so omitting it is the only configuration "+
+						"confirmed to parse cleanly on that box")
 			}
 		})
 	}
 }
 
-// Nokia's PCEP parser closes the session ("ObjClass 40 ObjType 1 out of
-// order") when ASSOCIATION follows ERO - the RFC 8697/9862 ABNF-compliant
-// position - so NokiaLegacy must serialize it right after LSP instead.
-// Other pccTypes keep the spec-compliant after-ERO position.
+// Object order must be END-POINTS, then ERO, then ASSOCIATION (RFC 5440/8697/
+// 9862) for every pccType that carries an ASSOCIATION object. NokiaLegacy has
+// no ASSOCIATION object at all (see TestNewPCInitiateMessage_VendorObjectSelection)
+// so it's not exercised here.
 func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
 	t.Parallel()
 
@@ -265,20 +254,17 @@ func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
 	dstAddr := netip.MustParseAddr("192.0.2.2")
 	segmentList := []table.Segment{table.NewSegmentSRMPLS(16001)}
 
-	cases := map[string]struct {
-		pccType            PccType
-		wantAssocBeforeEro bool
-	}{
-		"RFCCompliant":    {pccType: RFCCompliant, wantAssocBeforeEro: false},
-		"FRRoutingLegacy": {pccType: FRRoutingLegacy, wantAssocBeforeEro: false},
-		"NokiaLegacy":     {pccType: NokiaLegacy, wantAssocBeforeEro: true},
+	cases := map[string]PccType{
+		"RFCCompliant":    RFCCompliant,
+		"FRRoutingLegacy": FRRoutingLegacy,
+		"JuniperLegacy":   JuniperLegacy,
 	}
 
-	for name, tt := range cases {
+	for name, pccType := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := NewPCInitiateMessage(1, "policy1", false, 0, segmentList, 100, 200, srcAddr, dstAddr, VendorSpecific(tt.pccType))
+			m, err := NewPCInitiateMessage(1, "policy1", false, 0, segmentList, 100, 200, srcAddr, dstAddr, VendorSpecific(pccType))
 			require.NoError(t, err, "NewPCInitiateMessage failed")
 
 			raw, err := m.Serialize()
@@ -292,19 +278,8 @@ func TestNewPCInitiateMessage_AssociationObjectOrder(t *testing.T) {
 			require.GreaterOrEqual(t, eroIdx, 0, "ERO object not found in wire bytes: classes=%v", classes)
 			require.GreaterOrEqual(t, endpointsIdx, 0, "END-POINTS object not found in wire bytes: classes=%v", classes)
 
-			// Regression guard: an earlier AssociationBeforeERO reordering moved
-			// ASSOCIATION ahead of END-POINTS too, displacing END-POINTS from its
-			// RFC 5440 position (right after LSP, before everything else). A live
-			// Nokia 7750 rejected that as "ObjClass 4 ObjType 1 out of order" and
-			// closed the session. END-POINTS must precede ASSOCIATION regardless
-			// of where ASSOCIATION sits relative to ERO.
-			assert.Less(t, endpointsIdx, assocIdx, "expected END-POINTS before ASSOCIATION")
-
-			if tt.wantAssocBeforeEro {
-				assert.Less(t, assocIdx, eroIdx, "expected ASSOCIATION before ERO")
-			} else {
-				assert.Greater(t, assocIdx, eroIdx, "expected ASSOCIATION after ERO")
-			}
+			assert.Less(t, endpointsIdx, eroIdx, "expected END-POINTS before ERO")
+			assert.Less(t, eroIdx, assocIdx, "expected ERO before ASSOCIATION")
 		})
 	}
 }

@@ -42,10 +42,12 @@ import (
 //
 // The session is pinned to pcep.NokiaLegacy, confirmed live against a Nokia
 // 7750 (SR OS 26.7.R1): its PCEP parser closes the session with reason 3
-// ("malformed PCEP message") when the ASSOCIATION object carries the
-// RFC 9862 SRPOLICY-CPATH-ID/PREFERENCE TLVs, so PCInitiate keeps a minimal
-// ASSOCIATION object (EXTENDED-ASSOCIATION-ID only) for this pccType -
-// asserted below.
+// ("malformed PCEP message", "ObjClass 40 ObjType 1 out of order") whenever
+// PCInitiate carries an ASSOCIATION object at all - tried both the RFC
+// 8697/9862 ABNF position (after ERO) and before ERO, identical rejection
+// either way with a fully valid path in both cases, so ASSOCIATION's
+// position was never the actual problem. PCInitiate omits it entirely for
+// this pccType - asserted below.
 //
 // Note: localInterfaceId/remoteInterfaceId/unnumbered are all absent, so this
 // segment resolves to NAITypeSRIPv4Adjacency (NT=3, "numbered" IPv4
@@ -110,25 +112,11 @@ func TestReproPushTestYAML(t *testing.T) {
 	dumpObjects(t, body)
 
 	const associationObjectClass = 40
-	assocBody := findObjectBody(t, body, associationObjectClass)
-	tlvTypes := tlvTypesIn(t, assocBody[12:]) // skip the fixed reserved/flags/assoctype/associd/assocsrc(IPv4) header
-
-	const extendedAssociationIDType = 0x1f   // 31, RFC 8697
-	const srPolicyCPathIDType = 0x39         // 57, RFC 9862
-	const srPolicyCPathPreferenceType = 0x3b // 59, RFC 9862
-
-	assert.Contains(t, tlvTypes, uint16(extendedAssociationIDType), "NokiaLegacy ASSOCIATION object should keep EXTENDED-ASSOCIATION-ID for color/endpoint")
-	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathIDType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-ID (RFC 9862)")
-	assert.NotContains(t, tlvTypes, uint16(srPolicyCPathPreferenceType), "NokiaLegacy ASSOCIATION object must not carry SRPOLICY-CPATH-PREFERENCE (RFC 9862)")
-
-	// Confirmed live: this Nokia box closes the session ("ObjClass 40 ObjType 1
-	// out of order") when ASSOCIATION follows ERO, so it must come first.
 	classes := objectClassSequence(t, body)
-	assocIdx := indexOf(classes, associationObjectClass)
-	eroIdx := indexOf(classes, eroObjectClass)
-	require.GreaterOrEqual(t, assocIdx, 0, "ASSOCIATION object not found")
-	require.GreaterOrEqual(t, eroIdx, 0, "ERO object not found")
-	assert.Less(t, assocIdx, eroIdx, "ASSOCIATION must be serialized before ERO for a NokiaLegacy peer")
+	assert.Equal(t, -1, indexOf(classes, associationObjectClass),
+		"NokiaLegacy PCInitiate must not carry an ASSOCIATION object at all - a live Nokia 7750 (SR OS "+
+			"26.7.R1) rejects it regardless of ASSOCIATION's position, so omitting it is the only "+
+			"configuration confirmed to parse cleanly on that box: classes=%v", classes)
 }
 
 // objectClassSequence returns the PCEP object class byte of every object in
@@ -155,22 +143,6 @@ func indexOf(classes []byte, want byte) int {
 		}
 	}
 	return -1
-}
-
-// tlvTypesIn walks a TLV-only byte region (type(2)+length(2)+value+padding)
-// and returns the type of each TLV found.
-func tlvTypesIn(t *testing.T, tlvBytes []byte) []uint16 {
-	t.Helper()
-	var types []uint16
-	off := 0
-	for off+4 <= len(tlvBytes) {
-		typ := binary.BigEndian.Uint16(tlvBytes[off : off+2])
-		valLen := int(binary.BigEndian.Uint16(tlvBytes[off+2 : off+4]))
-		types = append(types, typ)
-		padded := (valLen + 3) &^ 3 // round up to a 4-byte boundary
-		off += 4 + padded
-	}
-	return types
 }
 
 // dumpObjects walks the PCEP common-object headers in body and logs each
