@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pola Topology Viewer</title>
+<link rel="stylesheet" href="/style.css">
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <header id="topbar">
+    <h1>Pola Topology Viewer</h1>
+    <div id="status">
+      <span id="counts">-</span>
+      <span id="updatedAt">not yet polled</span>
+      <span id="pollError" class="error"></span>
+    </div>
+    <button id="clearHighlight">Clear highlight</button>
+    <button id="relayout">Re-layout</button>
+  </header>
+
+  <main>
+    <div id="graph"></div>
+    <aside id="sidebar">
+      <div id="sidebar-empty">Click a node to see the policies (LSPs) on it.</div>
+      <div id="sidebar-content" class="hidden">
+        <h2 id="nodeTitle"></h2>
+        <div id="nodeMeta"></div>
+        <h3>Policies</h3>
+        <ul id="policyList"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <div id="legend">
+    <div><span class="dot session"></span> PCEP session node</div>
+    <div><span class="dot sr"></span> SR-capable node</div>
+    <div><span class="dot no-sr"></span> non-SR-capable node</div>
+    <div><span class="line highlighted"></span> highlighted LSP path</div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
