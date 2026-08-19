@@ -42,6 +42,7 @@ and a PCEP Library in Go.
 ## Installation & Use
 
 * [Getting Started](docs/sources/getting-started.md)
+* [Architecture & Feature Guide](docs/sources/architecture-and-features.md)
 * [Docker Image Usage](build/package/README.md)
 * Examples (powered by [Containerlab](https://containerlab.dev/))
   * [Containerlab Conventions](examples/containerlab)
