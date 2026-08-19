@@ -1116,6 +1116,9 @@ func (ss *Session) reoptimizeDynamicPolicies(ted *table.LsTED) reoptimizeStats {
 		// (never persisted into policy.Exclude), so toggling it on/off takes
 		// effect immediately without touching this policy's own stored intent.
 		cspfExclude := mergeGlobalExclude(policy.Exclude, globalExclude, []string{srcRouterID, dstRouterID})
+		ss.logger.Debug("reoptimizing dynamic policy",
+			zap.String("policyName", policy.Name), zap.Uint32("plspID", policy.PlspID),
+			zap.Strings("policyExclude", policy.Exclude), zap.Strings("globalExclude", globalExclude), zap.Strings("cspfExclude", cspfExclude))
 		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted, cspfExclude)
 		if err != nil {
 			// e.g. no all-SR path currently exists - an expected topology

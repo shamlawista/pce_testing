@@ -1569,6 +1569,61 @@ func TestReoptimizeDynamicPolicies_GlobalExcludeAppliedOnReoptimize(t *testing.T
 	}
 }
 
+// TestReoptimizeDynamicPolicies_GlobalExcludeAppliedAlongsidePerPolicyExclude
+// is the combined case neither of the two tests above cover on its own: a
+// policy that already carries its own non-empty per-policy Exclude, PLUS an
+// unrelated node added to the global exclusion set afterward. Both must be
+// honored together on reoptimization - a real field report observed a
+// policy's own Exclude apparently "winning" and the global set being
+// silently dropped whenever Exclude was already non-empty.
+func TestReoptimizeDynamicPolicies_GlobalExcludeAppliedAlongsidePerPolicyExclude(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+	ss.globalExcludeStore = newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	if err := ss.globalExcludeStore.add("transit-router"); err != nil {
+		t.Fatalf("failed to seed global exclude store: %v", err)
+	}
+
+	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003] (src=10.255.0.1, dst=10.255.0.2)
+	// Non-empty per-policy exclude naming a node that isn't even part of
+	// this topology - exercises the merge, not just the "already excluded"
+	// no-op case.
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, []string{"unrelated-router"})
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+	if policy, found := ss.SearchSRPolicy(1); !found || !slices.Equal(policy.Exclude, []string{"unrelated-router"}) {
+		t.Fatalf("registered policy.Exclude = %v (found=%v), want [unrelated-router]", policy, found)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	transit := srCapableTEDNode("transit-router", "10.255.0.9", 2)    // SID 16002 - globally excluded
+	transit2 := srCapableTEDNode("transit2-router", "10.255.0.8", 10) // SID 16010 - the only viable alternative
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 3)            // SID 16003
+	linkTEDNodes(src, transit, 10)
+	linkTEDNodes(transit, dst, 10)
+	linkTEDNodes(src, transit2, 15)
+	linkTEDNodes(transit2, dst, 15)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{
+		src.RouterID: src, transit.RouterID: transit, transit2.RouterID: transit2, dst.RouterID: dst,
+	}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Reoptimized: 1}) {
+		t.Fatalf("stats = %+v, want only Reoptimized=1 (the global exclusion must still force a path change even though this policy already has its own per-policy exclude)", stats)
+	}
+
+	got := decodePCUpdSegments(t, clientConn)
+	want := []table.Segment{table.NewSegmentSRMPLS(16010), table.NewSegmentSRMPLS(16003)}
+	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
+		t.Errorf("PCUpd segments = %v, want %v (via transit2-router, avoiding globally excluded transit-router's SID 16002)", got, want)
+	}
+
+	if policy, found := ss.SearchSRPolicy(1); !found || !slices.Equal(policy.Exclude, []string{"unrelated-router"}) {
+		t.Errorf("policy.Exclude = %v (found=%v), want unchanged [unrelated-router] - the global set must never overwrite or merge into the policy's own stored intent", policy.Exclude, found)
+	}
+}
+
 // TestReoptimizeDynamicPolicies_GlobalExcludeSkippedForOwnEndpoint confirms
 // the endpoint-conflict design decision holds during reoptimization too: a
 // global exclusion naming this policy's own source must not break its
