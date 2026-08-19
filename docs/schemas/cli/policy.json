@@ -68,9 +68,22 @@
                         "properties": {
                             "routerID": {
                                 "type": "string"
+                            },
+                            "sid": {
+                                "type": "string",
+                                "$comment": "resolved against the TED to a router ID at request time"
                             }
                         },
-                        "required": ["routerID"],
+                        "oneOf": [
+                            {
+                                "required": ["routerID"],
+                                "not": { "required": ["sid"] }
+                            },
+                            {
+                                "required": ["sid"],
+                                "not": { "required": ["routerID"] }
+                            }
+                        ],
                         "additionalProperties": false
                     }
                 }

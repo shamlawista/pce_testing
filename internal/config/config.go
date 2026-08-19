@@ -84,14 +84,45 @@ func (ip IntentPersistence) ResolvedPath() string {
 	return defaultIntentPersistencePath
 }
 
+// defaultNodeExclusionPersistencePath is used whenever
+// NodeExclusionPersistence.Path is unset, same fallback rule as
+// defaultIntentPersistencePath.
+const defaultNodeExclusionPersistencePath = "/var/lib/pola/node-exclusions.json"
+
+// NodeExclusionPersistence configures the global node-exclusion set (avoid
+// a router in every dynamically-computed policy server-wide, independent of
+// any single policy's own exclude) and its durable storage, so it survives
+// a polad restart. Enabled by default, same *bool convention as
+// IntentPersistence - see its comment for why.
+type NodeExclusionPersistence struct {
+	Enable *bool  `yaml:"enable"`
+	Path   string `yaml:"path"`
+}
+
+// Enabled reports whether the global node-exclusion feature should be
+// active: true unless explicitly disabled with `enable: false`.
+func (nep NodeExclusionPersistence) Enabled() bool {
+	return nep.Enable == nil || *nep.Enable
+}
+
+// ResolvedPath returns Path, falling back to
+// defaultNodeExclusionPersistencePath when it's unset.
+func (nep NodeExclusionPersistence) ResolvedPath() string {
+	if nep.Path != "" {
+		return nep.Path
+	}
+	return defaultNodeExclusionPersistencePath
+}
+
 type Global struct {
-	PCEP              PCEP              `yaml:"pcep"`
-	GRPCServer        GRPCServer        `yaml:"grpcServer"`
-	Log               Log               `yaml:"log"`
-	TED               *TED              `yaml:"ted"`
-	GoBGP             GoBGP             `yaml:"gobgp"`
-	USidMode          bool              `yaml:"usidMode"`
-	IntentPersistence IntentPersistence `yaml:"intentPersistence"`
+	PCEP                     PCEP                     `yaml:"pcep"`
+	GRPCServer               GRPCServer               `yaml:"grpcServer"`
+	Log                      Log                      `yaml:"log"`
+	TED                      *TED                     `yaml:"ted"`
+	GoBGP                    GoBGP                    `yaml:"gobgp"`
+	USidMode                 bool                     `yaml:"usidMode"`
+	IntentPersistence        IntentPersistence        `yaml:"intentPersistence"`
+	NodeExclusionPersistence NodeExclusionPersistence `yaml:"nodeExclusionPersistence"`
 }
 
 type Config struct {

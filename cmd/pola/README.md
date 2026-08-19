@@ -208,6 +208,28 @@ srPolicy:
     - routerID: 0000.0aff.0003
 ```
 
+Each `exclude` entry names a router either by `routerID` or by `sid` - use
+whichever one you actually know for the node being avoided. A `sid` entry is
+resolved against the TED to that node's router ID at request time:
+
+```yaml
+asn: 65000
+srPolicy:
+  pcepSessionAddr: 192.0.2.1
+  name: policy-name
+  srcRouterID: 0000.0aff.0001
+  dstRouterID: 0000.0aff.0004
+  color: 100
+  type: dynamic
+  metric: igp
+  exclude:
+    - sid: 16002
+```
+
+Exactly one of `routerID`/`sid` must be set per entry - both or neither is
+rejected as invalid input. A `sid` that doesn't match any node currently in
+the TED is also rejected, rather than silently excluding nothing.
+
 `exclude` only applies to `type: dynamic` (an explicit `segmentList` already
 fully controls its own path) and is rejected if it names the policy's own
 `srcRouterID`/`dstRouterID` or an explicit `waypoints[].routerID` - excluding a
@@ -215,7 +237,9 @@ node the path is required to pass through is a contradiction in the request
 itself, reported as a clean error rather than a "no path found" result.
 The exclusion is persisted like `type`/`metric` and reapplied on every
 reoptimization triggered by a later topology change, so it isn't silently
-dropped the next time the path is recomputed.
+dropped the next time the path is recomputed. Once resolved, a `sid` entry is
+persisted and displayed (via `sr-policy list`) as its router ID, the same as
+a `routerID` entry.
 
 #### Case: Explicit Path
 
@@ -461,6 +485,45 @@ JSON formatted response
     }
   ]
 }
+```
+
+### pola node-exclude add \[--routerID *id*\] \[--sid *sid*\]
+
+Adds a router to the **global** node-exclusion set: a server-wide list of
+routers kept out of CSPF consideration for every `type: dynamic` SR policy,
+in addition to each policy's own `exclude` (see `pola sr-policy add`). Useful
+to avoid a node ahead of a planned maintenance or migration without having
+to edit every individual policy.
+
+Exactly one of `--routerID` / `--sid` is required; `--sid` is resolved
+against the TED to a router ID at request time.
+
+```bash
+pola node-exclude add --routerID 0000.0aff.0002
+pola node-exclude add --sid 16002
+```
+
+The set is persisted (see `nodeExclusionPersistence` in polad's config) and
+re-applied fresh on every reoptimization, so it survives a polad restart and
+takes effect immediately for every dynamic policy - including ones that
+already existed before the node was added. If the excluded node happens to
+be a specific policy's own source, destination, or a waypoint, the global
+exclusion is silently skipped for that one policy rather than breaking it -
+that stays that policy's own `exclude` to enforce, if it needs to.
+
+### pola node-exclude remove \[--routerID *id*\] \[--sid *sid*\]
+
+Removes a router from the global node-exclusion set. Takes effect
+immediately on the next reoptimization, same as `add`.
+
+### pola node-exclude list \[-j\]
+
+Lists the current global node-exclusion set (sorted router IDs).
+
+JSON formatted response
+
+```json
+["0000.0aff.0002", "0000.0aff.0003"]
 ```
 
 ## Completion

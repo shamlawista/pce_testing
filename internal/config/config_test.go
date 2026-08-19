@@ -455,6 +455,116 @@ global:
 	}
 }
 
+// TestConfig_Validate_LegacyConfigWithoutNodeExclusionPersistence_StillValid
+// is NodeExclusionPersistence's sibling of
+// TestConfig_Validate_LegacyConfigWithoutIntentPersistence_StillValid -
+// same *bool default-enabled convention, same compatibility guarantee.
+func TestConfig_Validate_LegacyConfigWithoutNodeExclusionPersistence_StillValid(t *testing.T) {
+	path := writeConfig(t, validConfig)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected read error: %v", err)
+	}
+	if !c.Global.NodeExclusionPersistence.Enabled() {
+		t.Error("expected NodeExclusionPersistence.Enabled() to default to true when the section is omitted")
+	}
+	if got := c.Global.NodeExclusionPersistence.ResolvedPath(); got != defaultNodeExclusionPersistencePath {
+		t.Errorf("ResolvedPath() = %q, want %q", got, defaultNodeExclusionPersistencePath)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("unexpected validation error for a config with no nodeExclusionPersistence section: %v", err)
+	}
+}
+
+func TestNodeExclusionPersistence_Enabled_ExplicitlyFalse(t *testing.T) {
+	config := `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+  nodeExclusionPersistence:
+    enable: false
+`
+	path := writeConfig(t, config)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Global.NodeExclusionPersistence.Enabled() {
+		t.Error("expected Enabled() to be false when explicitly disabled")
+	}
+}
+
+func TestNodeExclusionPersistence_ResolvedPath_DefaultsWhenEmpty(t *testing.T) {
+	config := `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+  nodeExclusionPersistence:
+    enable: true
+`
+	path := writeConfig(t, config)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := c.Global.NodeExclusionPersistence.ResolvedPath(); got != defaultNodeExclusionPersistencePath {
+		t.Errorf("ResolvedPath() = %q, want %q", got, defaultNodeExclusionPersistencePath)
+	}
+}
+
+func TestReadConfigFile_NodeExclusionPersistenceSection_ParsesExpectedFields(t *testing.T) {
+	config := `
+global:
+  pcep:
+    address: "127.0.0.1"
+    port: 4189
+  grpcServer:
+    address: "127.0.0.1"
+    port: 50052
+  log:
+    path: "/var/log/pola/"
+    name: "polad.log"
+  ted:
+    enable: false
+  nodeExclusionPersistence:
+    enable: true
+    path: "/var/lib/pola/node-exclusions.json"
+`
+	path := writeConfig(t, config)
+
+	c, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.Global.NodeExclusionPersistence.Enabled() {
+		t.Error("expected Enabled() to be true")
+	}
+	if c.Global.NodeExclusionPersistence.Path != "/var/lib/pola/node-exclusions.json" {
+		t.Errorf("unexpected NodeExclusionPersistence.Path: %q", c.Global.NodeExclusionPersistence.Path)
+	}
+}
+
 // yaml.v3 decodes an unquoted integer scalar into a string field without
 // error; pin this behavior since Port is typed as string.
 func TestReadConfigFile_UnquotedIntegerPort(t *testing.T) {

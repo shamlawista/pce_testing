@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -851,7 +852,21 @@ func TestGetSegmentList_ExplicitRejectsExclude(t *testing.T) {
 		ExcludeRouterIds: []string{"some-router"},
 	}
 
-	_, err := getSegmentList(inputSRPolicy, &table.LsTED{Nodes: map[string]*table.LsNode{}}, false)
+	_, _, err := getSegmentList(inputSRPolicy, &table.LsTED{Nodes: map[string]*table.LsNode{}}, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exclude is only meaningful for type: dynamic")
+}
+
+// TestGetSegmentList_ExplicitRejectsExcludeSids mirrors
+// TestGetSegmentList_ExplicitRejectsExclude for the SID-based exclude form.
+func TestGetSegmentList_ExplicitRejectsExcludeSids(t *testing.T) {
+	inputSRPolicy := &pb.SRPolicy{
+		Type:        pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT,
+		SegmentList: []*pb.Segment{{Sid: "16003"}},
+		ExcludeSids: []string{"16002"},
+	}
+
+	_, _, err := getSegmentList(inputSRPolicy, &table.LsTED{Nodes: map[string]*table.LsNode{}}, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exclude is only meaningful for type: dynamic")
 }
@@ -881,13 +896,104 @@ func TestGetSegmentList_DynamicAppliesExclusion(t *testing.T) {
 		ExcludeRouterIds: []string{"B"},
 	}
 
-	segmentList, err := getSegmentList(inputSRPolicy, ted, false)
+	segmentList, resolvedExclude, err := getSegmentList(inputSRPolicy, ted, false, nil)
 	require.NoError(t, err)
+	assert.Equal(t, []string{"B"}, resolvedExclude)
 
 	bSID, _ := b.NodeSegment()
 	for _, seg := range segmentList {
 		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "excluded node B's own SID must not appear in the computed path: %v", segmentList)
 	}
+}
+
+// TestGetSegmentList_DynamicResolvesExcludeSid confirms exclude_sids is
+// resolved against the TED to the owning router ID and applied identically
+// to ExcludeRouterIds, and that the resolved router ID (not the SID string)
+// is what getSegmentList returns for persistence.
+func TestGetSegmentList_DynamicResolvesExcludeSid(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	c := srCapableTEDNode("C", "10.255.0.3", 1)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+
+	linkTEDNodes(a, b, 1)
+	linkTEDNodes(b, d, 1)
+	linkTEDNodes(a, c, 10)
+	linkTEDNodes(c, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}}
+	bSID, err := b.NodeSegment()
+	require.NoError(t, err)
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:        pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId: "A",
+		DstRouterId: "D",
+		Metric:      pb.MetricType_METRIC_TYPE_TE,
+		ExcludeSids: []string{bSID.SidString()},
+	}
+
+	segmentList, resolvedExclude, err := getSegmentList(inputSRPolicy, ted, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"B"}, resolvedExclude, "exclude_sids must resolve to the owning router ID, not stay a raw SID")
+
+	for _, seg := range segmentList {
+		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "excluded node B's own SID must not appear in the computed path: %v", segmentList)
+	}
+}
+
+// TestGetSegmentList_DynamicCombinesRouterIDAndSidExcludes confirms both
+// exclude forms can be used together in the same request and both apply.
+func TestGetSegmentList_DynamicCombinesRouterIDAndSidExcludes(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	c := srCapableTEDNode("C", "10.255.0.3", 4)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+
+	linkTEDNodes(a, b, 1)
+	linkTEDNodes(a, c, 1)
+	linkTEDNodes(b, d, 1)
+	linkTEDNodes(c, d, 1)
+	// A-B-D and A-C-D are the only two routes, each costing 2. Excluding both
+	// B (by router ID) and C (by SID) must leave no valid path.
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}}
+	cSID, err := c.NodeSegment()
+	require.NoError(t, err)
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:             pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId:      "A",
+		DstRouterId:      "D",
+		Metric:           pb.MetricType_METRIC_TYPE_TE,
+		ExcludeRouterIds: []string{"B"},
+		ExcludeSids:      []string{cSID.SidString()},
+	}
+
+	_, _, err = getSegmentList(inputSRPolicy, ted, false, nil)
+	require.Error(t, err, "expected no path once both B and C are excluded")
+}
+
+// TestGetSegmentList_ExcludeSidNotInTED confirms an unresolvable exclude_sids
+// entry fails cleanly rather than silently being dropped from exclusion.
+func TestGetSegmentList_ExcludeSidNotInTED(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+	linkTEDNodes(a, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "D": d}}
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:        pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId: "A",
+		DstRouterId: "D",
+		Metric:      pb.MetricType_METRIC_TYPE_TE,
+		ExcludeSids: []string{"99999"},
+	}
+
+	_, _, err := getSegmentList(inputSRPolicy, ted, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in TED")
 }
 
 // TestGetSegmentList_DynamicWaypointsAppliesExclusion is the loose-source-
@@ -916,13 +1022,175 @@ func TestGetSegmentList_DynamicWaypointsAppliesExclusion(t *testing.T) {
 		ExcludeRouterIds: []string{"B"},
 	}
 
-	segmentList, err := getSegmentList(inputSRPolicy, ted, false)
+	segmentList, _, err := getSegmentList(inputSRPolicy, ted, false, nil)
 	require.NoError(t, err)
 
 	bSID, _ := b.NodeSegment()
 	for _, seg := range segmentList {
 		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "excluded node B's own SID must not appear in the computed path: %v", segmentList)
 	}
+}
+
+// TestGetSegmentList_AppliesGlobalExclude confirms getSegmentList's own
+// exclude-and-globalExclude wiring end-to-end: a request with no exclude of
+// its own still avoids a node named only in the global set, but the
+// returned (and therefore persisted) exclude value stays empty - the global
+// set must never get baked into a policy's own stored intent.
+func TestGetSegmentList_AppliesGlobalExclude(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	c := srCapableTEDNode("C", "10.255.0.3", 1)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+
+	linkTEDNodes(a, b, 1) // cheapest first hop, but B is globally excluded
+	linkTEDNodes(b, d, 1)
+	linkTEDNodes(a, c, 10)
+	linkTEDNodes(c, d, 1) // the only path avoiding B
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}}
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:        pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId: "A",
+		DstRouterId: "D",
+		Metric:      pb.MetricType_METRIC_TYPE_TE,
+	}
+
+	segmentList, resolvedExclude, err := getSegmentList(inputSRPolicy, ted, false, []string{"B"})
+	require.NoError(t, err)
+	assert.Empty(t, resolvedExclude, "the global exclude set must not be returned for persistence")
+
+	bSID, _ := b.NodeSegment()
+	for _, seg := range segmentList {
+		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "globally excluded node B's own SID must not appear in the computed path: %v", segmentList)
+	}
+}
+
+// TestGetSegmentList_GlobalExcludeSkippedForOwnEndpoint confirms the
+// endpoint-conflict design decision at the integration level: a global
+// exclusion naming this request's own source must not break the request -
+// it's silently omitted for this policy, and CSPF still succeeds using A as
+// the source.
+func TestGetSegmentList_GlobalExcludeSkippedForOwnEndpoint(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+	linkTEDNodes(a, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "D": d}}
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:        pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId: "A",
+		DstRouterId: "D",
+		Metric:      pb.MetricType_METRIC_TYPE_TE,
+	}
+
+	_, _, err := getSegmentList(inputSRPolicy, ted, false, []string{"A"})
+	require.NoError(t, err, "a global exclusion naming this policy's own source must not break the request")
+}
+
+func newTestAPIServerWithGlobalExclude(ted *table.LsTED, store *globalExcludeStore) *APIServer {
+	return &APIServer{
+		pce:    &Server{ted: ted, globalExcludeStore: store},
+		logger: zap.NewNop(),
+	}
+}
+
+func TestAddExcludedNode_AddsRouterID(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	s := newTestAPIServerWithGlobalExclude(nil, store)
+
+	resp, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{RouterId: "router-a"})
+	require.NoError(t, err)
+	assert.True(t, resp.GetIsSuccess())
+	assert.Equal(t, []string{"router-a"}, store.list())
+}
+
+func TestAddExcludedNode_ResolvesSid(t *testing.T) {
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"B": b}}
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	s := newTestAPIServerWithGlobalExclude(ted, store)
+
+	bSID, err := b.NodeSegment()
+	require.NoError(t, err)
+
+	resp, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{Sid: bSID.SidString()})
+	require.NoError(t, err)
+	assert.True(t, resp.GetIsSuccess())
+	assert.Equal(t, []string{"B"}, store.list(), "exclude_sids form must resolve to the owning router ID, not stay a raw SID")
+}
+
+func TestAddExcludedNode_SidNotInTED(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	s := newTestAPIServerWithGlobalExclude(&table.LsTED{Nodes: map[string]*table.LsNode{}}, store)
+
+	_, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{Sid: "99999"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in TED")
+}
+
+func TestAddExcludedNode_RejectsBothRouterIDAndSid(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	s := newTestAPIServerWithGlobalExclude(nil, store)
+
+	_, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{RouterId: "router-a", Sid: "16002"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not both")
+}
+
+func TestAddExcludedNode_RejectsNeitherRouterIDNorSid(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	s := newTestAPIServerWithGlobalExclude(nil, store)
+
+	_, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{})
+	require.Error(t, err)
+}
+
+func TestAddExcludedNode_DisabledFeatureReturnsError(t *testing.T) {
+	s := newTestAPIServerWithGlobalExclude(nil, nil)
+
+	_, err := s.AddExcludedNode(context.Background(), &pb.AddExcludedNodeRequest{RouterId: "router-a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disabled")
+}
+
+func TestRemoveExcludedNode_RemovesRouterID(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	require.NoError(t, store.add("router-a"))
+	s := newTestAPIServerWithGlobalExclude(nil, store)
+
+	resp, err := s.RemoveExcludedNode(context.Background(), &pb.RemoveExcludedNodeRequest{RouterId: "router-a"})
+	require.NoError(t, err)
+	assert.True(t, resp.GetIsSuccess())
+	assert.Empty(t, store.list())
+}
+
+func TestRemoveExcludedNode_DisabledFeatureReturnsError(t *testing.T) {
+	s := newTestAPIServerWithGlobalExclude(nil, nil)
+
+	_, err := s.RemoveExcludedNode(context.Background(), &pb.RemoveExcludedNodeRequest{RouterId: "router-a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disabled")
+}
+
+func TestGetExcludedNodes_ReturnsCurrentSet(t *testing.T) {
+	store := newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	require.NoError(t, store.add("router-a"))
+	require.NoError(t, store.add("router-b"))
+	s := newTestAPIServerWithGlobalExclude(nil, store)
+
+	resp, err := s.GetExcludedNodes(context.Background(), &pb.GetExcludedNodesRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"router-a", "router-b"}, resp.GetRouterIds())
+}
+
+func TestGetExcludedNodes_DisabledFeatureReturnsEmptyNotError(t *testing.T) {
+	s := newTestAPIServerWithGlobalExclude(nil, nil)
+
+	resp, err := s.GetExcludedNodes(context.Background(), &pb.GetExcludedNodesRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetRouterIds())
 }
 
 func TestConvertSegment_CarriesSRv6NAIAndStructure(t *testing.T) {

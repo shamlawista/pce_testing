@@ -145,6 +145,20 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "nodeExclusionPersistence": {
+                    "type": "object",
+                    "properties": {
+                        "enable": {
+                            "type": "boolean",
+                            "default": true
+                        },
+                        "path": {
+                            "type": "string",
+                            "default": "/var/lib/pola/node-exclusions.json"
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "required": [

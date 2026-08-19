@@ -484,6 +484,33 @@ func DeleteSRPolicy(client pb.PCEServiceClient, req *pb.DeleteSRPolicyRequest) e
 	return err
 }
 
+func AddExcludedNode(client pb.PCEServiceClient, req *pb.AddExcludedNodeRequest) error {
+	ctx, cancel := withTimeout()
+	defer cancel()
+
+	_, err := client.AddExcludedNode(ctx, req)
+	return err
+}
+
+func RemoveExcludedNode(client pb.PCEServiceClient, req *pb.RemoveExcludedNodeRequest) error {
+	ctx, cancel := withTimeout()
+	defer cancel()
+
+	_, err := client.RemoveExcludedNode(ctx, req)
+	return err
+}
+
+func GetExcludedNodes(client pb.PCEServiceClient) ([]string, error) {
+	ctx, cancel := withTimeout()
+	defer cancel()
+
+	ret, err := client.GetExcludedNodes(ctx, &pb.GetExcludedNodesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return ret.GetRouterIds(), nil
+}
+
 func GetTED(client pb.PCEServiceClient) (*table.LsTED, error) {
 	ctx, cancel := withTimeout()
 	defer cancel()

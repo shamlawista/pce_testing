@@ -414,7 +414,7 @@ func TestSendSRPolicyRequest_ForgetsIntentOnSendFailure(t *testing.T) {
 		DisablePathCompute: true,
 	}
 
-	if err := sendSRPolicyRequest(apiServer, req, nil, netip.MustParseAddr("10.255.0.1"), dstAddr, true); err == nil {
+	if err := sendSRPolicyRequest(apiServer, req, nil, nil, netip.MustParseAddr("10.255.0.1"), dstAddr, true); err == nil {
 		t.Fatal("expected sendSRPolicyRequest to fail once the connection is closed")
 	}
 
@@ -1520,6 +1520,88 @@ func TestReoptimizeDynamicPolicies_ExclusionAppliedOnReoptimize(t *testing.T) {
 	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
 		t.Errorf("PCUpd segments = %v, want %v (via transit2-router, avoiding excluded transit-router's SID 16002)", got, want)
 	}
+}
+
+// TestReoptimizeDynamicPolicies_GlobalExcludeAppliedOnReoptimize mirrors
+// TestReoptimizeDynamicPolicies_ExclusionAppliedOnReoptimize, but the
+// avoidance comes from ss.globalExcludeStore rather than the policy's own
+// Exclude - proving the global node-exclusion set is fetched and applied
+// fresh on every reoptimization sweep, exactly like per-policy Exclude.
+func TestReoptimizeDynamicPolicies_GlobalExcludeAppliedOnReoptimize(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+	ss.globalExcludeStore = newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	if err := ss.globalExcludeStore.add("transit-router"); err != nil {
+		t.Fatalf("failed to seed global exclude store: %v", err)
+	}
+
+	sr := newTestStateReport(t, 1, 7)                                          // installs [16002, 16003] (src=10.255.0.1, dst=10.255.0.2)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil) // no per-policy exclude
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	transit := srCapableTEDNode("transit-router", "10.255.0.9", 2)    // SID 16002 - globally excluded
+	transit2 := srCapableTEDNode("transit2-router", "10.255.0.8", 10) // SID 16010 - the only viable alternative
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 3)            // SID 16003
+	linkTEDNodes(src, transit, 10)
+	linkTEDNodes(transit, dst, 10)
+	linkTEDNodes(src, transit2, 15)
+	linkTEDNodes(transit2, dst, 15)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{
+		src.RouterID: src, transit.RouterID: transit, transit2.RouterID: transit2, dst.RouterID: dst,
+	}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Reoptimized: 1}) {
+		t.Fatalf("stats = %+v, want only Reoptimized=1 (global exclusion should force a real path change)", stats)
+	}
+
+	got := decodePCUpdSegments(t, clientConn)
+	want := []table.Segment{table.NewSegmentSRMPLS(16010), table.NewSegmentSRMPLS(16003)}
+	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
+		t.Errorf("PCUpd segments = %v, want %v (via transit2-router, avoiding globally excluded transit-router's SID 16002)", got, want)
+	}
+
+	if policy, found := ss.SearchSRPolicy(1); !found || len(policy.Exclude) != 0 {
+		t.Errorf("policy.Exclude = %v (found=%v), want empty - the global exclusion set must never be baked into a policy's own stored intent", policy.Exclude, found)
+	}
+}
+
+// TestReoptimizeDynamicPolicies_GlobalExcludeSkippedForOwnEndpoint confirms
+// the endpoint-conflict design decision holds during reoptimization too: a
+// global exclusion naming this policy's own source must not break its
+// reoptimization - it's silently omitted for this policy, so the path stays
+// unchanged rather than erroring or going stale.
+func TestReoptimizeDynamicPolicies_GlobalExcludeSkippedForOwnEndpoint(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+	ss.globalExcludeStore = newGlobalExcludeStore(filepath.Join(t.TempDir(), "global-exclude.json"))
+	if err := ss.globalExcludeStore.add("src-router"); err != nil { // this policy's own source
+		t.Fatalf("failed to seed global exclude store: %v", err)
+	}
+
+	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003]
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	transit := srCapableTEDNode("transit-router", "10.255.0.9", 2)
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 3)
+	linkTEDNodes(src, transit, 10)
+	linkTEDNodes(transit, dst, 10)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{
+		src.RouterID: src, transit.RouterID: transit, dst.RouterID: dst,
+	}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Unchanged: 1}) {
+		t.Fatalf("stats = %+v, want only Unchanged=1 (a global exclusion on this policy's own source must be silently skipped, not break reoptimization)", stats)
+	}
+	assertNothingSent(t, clientConn)
 }
 
 func TestReoptimizeDynamicPolicies_PathUnchangedSendsNothing(t *testing.T) {

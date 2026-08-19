@@ -63,9 +63,10 @@ mkdir -p pola-config
 LOGDIR="$(pwd)/logs"
 mkdir -p "$LOGDIR"
 
-# Prepare the SR policy intent persistence directory for volume mount
-# (global.intentPersistence is enabled by default; skip this if you've set
-# `enable: false` in polad.yaml)
+# Prepare the persistence directory for volume mount - shared by SR policy
+# intent (global.intentPersistence) and the global node-exclusion set
+# (global.nodeExclusionPersistence), both enabled by default; skip this if
+# you've set `enable: false` for both in polad.yaml
 INTENTDIR="$(pwd)/lib"
 mkdir -p "$INTENTDIR"
 
@@ -82,7 +83,7 @@ docker run -d --network host \
     ghcr.io/nttcom/pola:latest
 ```
 
-`global.intentPersistence` is enabled by default (path `/var/lib/pola/intents.json`), so the mount above is needed for it to actually survive a container recreation - exactly the scenario that feature exists for. Without it, `polad` still starts fine (a missing/unwritable directory only disables persistence for that run, logged as a warning, never fatal), it just won't remember SR policy intent across restarts. Skip the mount if you've explicitly set `enable: false`.
+`global.intentPersistence` (path `/var/lib/pola/intents.json`) and `global.nodeExclusionPersistence` (path `/var/lib/pola/node-exclusions.json`) are both enabled by default and share this same directory, so the one mount above covers both - needed for them to actually survive a container recreation, exactly the scenario those features exist for. Without it, `polad` still starts fine (a missing/unwritable directory only disables the affected feature for that run, logged as a warning, never fatal), it just won't remember SR policy intent or the global node-exclusion set across restarts. Skip the mount if you've explicitly disabled both.
 
 ## Run with Bridge Network Mode
 
@@ -99,9 +100,10 @@ mkdir -p pola-config
 LOGDIR="$(pwd)/logs"
 mkdir -p "$LOGDIR"
 
-# Prepare the SR policy intent persistence directory for volume mount
-# (global.intentPersistence is enabled by default; skip this if you've set
-# `enable: false` in polad.yaml)
+# Prepare the persistence directory for volume mount - shared by SR policy
+# intent (global.intentPersistence) and the global node-exclusion set
+# (global.nodeExclusionPersistence), both enabled by default; skip this if
+# you've set `enable: false` for both in polad.yaml
 INTENTDIR="$(pwd)/lib"
 mkdir -p "$INTENTDIR"
 
@@ -121,4 +123,4 @@ docker run -d --network pcep_net --ip <PCE Address> \
 docker network connect pcep_net <PCC container name>
 ```
 
-`global.intentPersistence` is enabled by default (path `/var/lib/pola/intents.json`), so the mount above is needed for it to actually survive a container recreation - exactly the scenario that feature exists for. Without it, `polad` still starts fine (a missing/unwritable directory only disables persistence for that run, logged as a warning, never fatal), it just won't remember SR policy intent across restarts. Skip the mount if you've explicitly set `enable: false`.
+`global.intentPersistence` (path `/var/lib/pola/intents.json`) and `global.nodeExclusionPersistence` (path `/var/lib/pola/node-exclusions.json`) are both enabled by default and share this same directory, so the one mount above covers both - needed for them to actually survive a container recreation, exactly the scenario those features exist for. Without it, `polad` still starts fine (a missing/unwritable directory only disables the affected feature for that run, logged as a warning, never fatal), it just won't remember SR policy intent or the global node-exclusion set across restarts. Skip the mount if you've explicitly disabled both.

@@ -57,7 +57,17 @@ type Session struct {
 	tedMu                   sync.RWMutex               // guards ted; written via Server.propagateTED from the TED-update goroutine, read from the PCEP-message-reading goroutine.
 	ted                     *table.LsTED
 	asn                     uint32
-	intentStore             *intentStore // nil = persistence disabled; set by Server.Serve before Established().
+	intentStore             *intentStore        // nil = persistence disabled; set by Server.Serve before Established().
+	globalExcludeStore      *globalExcludeStore // nil = feature disabled; set by Server.Serve before Established().
+}
+
+// globalExcludeList returns the current global node-exclusion set, or nil
+// if the feature is disabled.
+func (ss *Session) globalExcludeList() []string {
+	if ss.globalExcludeStore == nil {
+		return nil
+	}
+	return ss.globalExcludeStore.list()
 }
 
 // TED returns the session's current TED snapshot. Safe for concurrent use with setTED.
@@ -1083,6 +1093,7 @@ func (s reoptimizeStats) total() int {
 func (ss *Session) reoptimizeDynamicPolicies(ted *table.LsTED) reoptimizeStats {
 	var stats reoptimizeStats
 	addrIndex := buildAddressRouterIDIndex(ted)
+	globalExclude := ss.globalExcludeList()
 
 	for _, policy := range ss.SRPolicies() {
 		if policy.Type != table.PolicyTypeDynamic {
@@ -1101,7 +1112,11 @@ func (ss *Session) reoptimizeDynamicPolicies(ted *table.LsTED) reoptimizeStats {
 		// policy.Exclude is intent, exactly like Type/Metric - it must be
 		// reapplied on every reoptimization, not just the original request,
 		// or a topology change would silently route the excluded node back in.
-		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted, policy.Exclude)
+		// The global exclusion set is re-fetched and merged fresh every sweep
+		// (never persisted into policy.Exclude), so toggling it on/off takes
+		// effect immediately without touching this policy's own stored intent.
+		cspfExclude := mergeGlobalExclude(policy.Exclude, globalExclude, []string{srcRouterID, dstRouterID})
+		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted, cspfExclude)
 		if err != nil {
 			// e.g. no all-SR path currently exists - an expected topology
 			// state (mirrors cspf.CSPF's own clean-error semantics), not a

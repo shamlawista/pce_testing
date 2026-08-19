@@ -85,8 +85,12 @@ type Waypoint struct {
 
 // Exclude is a router to keep out of CSPF consideration entirely for a
 // type: dynamic policy - e.g. a node planned for maintenance/migration.
+// Exactly one of RouterID or SID must be set; SID is resolved against the
+// TED to a router ID at request time, for when the operator knows a node's
+// SID but not its router ID.
 type Exclude struct {
 	RouterID string `yaml:"routerID"`
+	SID      string `yaml:"sid"`
 }
 
 type SRPolicy struct {
@@ -217,7 +221,7 @@ func addSRPolicyWithRouterID(input InputFormat, noSIDValidate bool) error {
 		return err
 	}
 
-	srPolicyType, metric, segmentList, waypoints, exclude, err :=
+	srPolicyType, metric, segmentList, waypoints, excludeRouterIDs, excludeSIDs, err :=
 		buildPolicyByType(input, sampleInputDynamic, sampleInputExplicit)
 	if err != nil {
 		return err
@@ -233,7 +237,8 @@ func addSRPolicyWithRouterID(input InputFormat, noSIDValidate bool) error {
 		SegmentList:      segmentList,
 		Metric:           metric,
 		Waypoints:        waypoints,
-		ExcludeRouterIds: exclude,
+		ExcludeRouterIds: excludeRouterIDs,
+		ExcludeSids:      excludeSIDs,
 	}
 
 	req := &pb.CreateSRPolicyRequest{
@@ -300,7 +305,8 @@ func buildPolicyByType(
 	pb.MetricType,
 	[]*pb.Segment,
 	[]*pb.Waypoint,
-	[]string,
+	[]string, // exclude router IDs
+	[]string, // exclude SIDs
 	error,
 ) {
 	switch input.SRPolicy.Type {
@@ -309,7 +315,7 @@ func buildPolicyByType(
 	case "dynamic":
 		return buildDynamicPolicy(input, sampleDynamic)
 	default:
-		return 0, 0, nil, nil, nil, fmt.Errorf("invalid input `type`")
+		return 0, 0, nil, nil, nil, nil, fmt.Errorf("invalid input `type`")
 	}
 }
 
@@ -322,17 +328,18 @@ func buildExplicitPolicy(
 	[]*pb.Segment,
 	[]*pb.Waypoint,
 	[]string,
+	[]string,
 	error,
 ) {
 	if len(input.SRPolicy.SegmentList) == 0 {
-		return 0, 0, nil, nil, nil, errors.New(
+		return 0, 0, nil, nil, nil, nil, errors.New(
 			"invalid input\n" +
 				"input example is below\n\n" +
 				sampleExplicit,
 		)
 	}
 	if len(input.SRPolicy.Exclude) > 0 {
-		return 0, 0, nil, nil, nil, errors.New(
+		return 0, 0, nil, nil, nil, nil, errors.New(
 			"`exclude` is only meaningful for `type: dynamic` - an explicit segment list already fully controls the path",
 		)
 	}
@@ -350,7 +357,7 @@ func buildExplicitPolicy(
 		})
 	}
 
-	return pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT, 0, segments, nil, nil, nil
+	return pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT, 0, segments, nil, nil, nil, nil
 }
 
 func buildDynamicPolicy(
@@ -362,10 +369,11 @@ func buildDynamicPolicy(
 	[]*pb.Segment,
 	[]*pb.Waypoint,
 	[]string,
+	[]string,
 	error,
 ) {
 	if input.SRPolicy.Metric == "" {
-		return 0, 0, nil, nil, nil, errors.New(
+		return 0, 0, nil, nil, nil, nil, errors.New(
 			"invalid input\n" +
 				"input example is below\n\n" +
 				sampleDynamic,
@@ -374,7 +382,7 @@ func buildDynamicPolicy(
 
 	metric, err := parseMetric(input.SRPolicy.Metric)
 	if err != nil {
-		return 0, 0, nil, nil, nil, err
+		return 0, 0, nil, nil, nil, nil, err
 	}
 
 	var waypoints []*pb.Waypoint
@@ -385,12 +393,25 @@ func buildDynamicPolicy(
 		})
 	}
 
-	var exclude []string
+	var excludeRouterIDs, excludeSIDs []string
 	for _, ex := range input.SRPolicy.Exclude {
-		exclude = append(exclude, ex.RouterID)
+		hasRouterID := ex.RouterID != ""
+		hasSID := ex.SID != ""
+		switch {
+		case hasRouterID && hasSID:
+			return 0, 0, nil, nil, nil, nil, fmt.Errorf(
+				"exclude entry has both routerID (%q) and sid (%q) set - specify exactly one", ex.RouterID, ex.SID)
+		case hasRouterID:
+			excludeRouterIDs = append(excludeRouterIDs, ex.RouterID)
+		case hasSID:
+			excludeSIDs = append(excludeSIDs, ex.SID)
+		default:
+			return 0, 0, nil, nil, nil, nil, errors.New(
+				"exclude entry has neither routerID nor sid set - specify exactly one")
+		}
 	}
 
-	return pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC, metric, nil, waypoints, exclude, nil
+	return pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC, metric, nil, waypoints, excludeRouterIDs, excludeSIDs, nil
 }
 
 func parseMetric(metric string) (pb.MetricType, error) {
