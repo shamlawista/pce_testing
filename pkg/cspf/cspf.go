@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 
 	"github.com/nttcom/pola/pkg/table"
 )
@@ -29,15 +30,60 @@ func newNode(id string, cost uint32, nodeSeg table.Segment) *node {
 	}
 }
 
-func CSPF(srcRouterID string, dstRouterID string, metric table.MetricType, ted *table.LsTED) ([]table.Segment, error) {
+// CSPF computes the shortest (per metric) all-SR-MPLS-capable path from
+// srcRouterID to dstRouterID, excluding every router ID in excluded from
+// consideration entirely - as if those nodes (and every link through them)
+// didn't exist in the graph. excluded may be nil or empty for no exclusion.
+//
+// Excluding the source or destination itself is rejected up front with a
+// clear error (RFC 5521 exclusion semantics don't define "compute a path
+// that both starts/ends at and excludes the same node") - this is
+// deliberately a hard error, not folded into the generic "no path found"
+// case, so the two are never confused with each other.
+func CSPF(srcRouterID string, dstRouterID string, metric table.MetricType, ted *table.LsTED, excluded []string) ([]table.Segment, error) {
+	if err := validateExclusion(srcRouterID, dstRouterID, excluded); err != nil {
+		return nil, err
+	}
+
 	network := ted.Nodes
 	// TODO: update network information according to constraints
-	segmentList, err := spf(srcRouterID, dstRouterID, metric, network)
+	segmentList, err := spf(srcRouterID, dstRouterID, metric, network, excludedSet(excluded))
 	if err != nil {
 		return nil, err
 	}
 
 	return segmentList, nil
+}
+
+// validateExclusion rejects excluding a request's own source, destination,
+// or (for loose source routing) any explicit waypoint - excluding a node
+// that the path is required to pass through is a contradiction in the
+// request itself, not a topology condition, so it must never be reported as
+// a plain "no path found".
+func validateExclusion(srcRouterID, dstRouterID string, excluded []string) error {
+	for _, id := range excluded {
+		switch id {
+		case srcRouterID:
+			return fmt.Errorf("cannot exclude router %s: it is the path's own source", id)
+		case dstRouterID:
+			return fmt.Errorf("cannot exclude router %s: it is the path's own destination", id)
+		}
+	}
+	return nil
+}
+
+// excludedSet converts an excluded-router-ID list into the set form spf's
+// graph walk checks against. A nil/empty input is a valid, cheap "exclude
+// nothing".
+func excludedSet(excluded []string) map[string]struct{} {
+	if len(excluded) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(excluded))
+	for _, id := range excluded {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 // CSPFWithLooseSourceRouting computes a path with optional waypoints using loose source routing.
@@ -46,7 +92,18 @@ func CSPFWithLooseSourceRouting(
 	waypoints []table.Waypoint,
 	metric table.MetricType,
 	ted *table.LsTED,
+	excluded []string,
 ) ([]table.Segment, error) {
+	// Checked separately from the src/dst-of-each-section validation
+	// CSPF() already does below: an *explicit* waypoint conflicting with
+	// exclusion is a different, clearer error than "own source"/"own
+	// destination" would be if checked only per-section.
+	for _, wp := range waypoints {
+		if slices.Contains(excluded, wp.RouterID) {
+			return nil, fmt.Errorf("cannot exclude router %s: it is an explicit waypoint of this path", wp.RouterID)
+		}
+	}
+
 	fullList := []table.Segment{}
 	prev := src
 
@@ -54,7 +111,7 @@ func CSPFWithLooseSourceRouting(
 	allWaypoints := append(append([]table.Waypoint{}, waypoints...), table.Waypoint{RouterID: dst})
 
 	for _, wp := range allWaypoints {
-		sectionSegs, seg, err := buildSectionSegments(prev, wp, metric, ted, fullList)
+		sectionSegs, seg, err := buildSectionSegments(prev, wp, metric, ted, fullList, excluded)
 		if err != nil {
 			return nil, err
 		}
@@ -67,9 +124,9 @@ func CSPFWithLooseSourceRouting(
 }
 
 // buildSectionSegments calculates CSPF to waypoint and builds the waypoint segment.
-func buildSectionSegments(prev string, wp table.Waypoint, metric table.MetricType, ted *table.LsTED, fullList []table.Segment) ([]table.Segment, table.Segment, error) {
+func buildSectionSegments(prev string, wp table.Waypoint, metric table.MetricType, ted *table.LsTED, fullList []table.Segment, excluded []string) ([]table.Segment, table.Segment, error) {
 	// Compute CSPF from prev → waypoint
-	sectionSegs, err := CSPF(prev, wp.RouterID, metric, ted)
+	sectionSegs, err := CSPF(prev, wp.RouterID, metric, ted, excluded)
 	if err != nil {
 		return nil, nil, fmt.Errorf("CSPF failed between %s and %s: %w", prev, wp.RouterID, err)
 	}
@@ -120,7 +177,7 @@ func appendIfNotDuplicate(list []table.Segment, seg table.Segment) []table.Segme
 	return list
 }
 
-func spf(srcRouterID string, dstRouterID string, metricType table.MetricType, network map[string]*table.LsNode) ([]table.Segment, error) {
+func spf(srcRouterID string, dstRouterID string, metricType table.MetricType, network map[string]*table.LsNode, excluded map[string]struct{}) ([]table.Segment, error) {
 	calculatingNodes, err := initNodeMap(srcRouterID, network)
 	if err != nil {
 		return nil, err
@@ -132,15 +189,16 @@ func spf(srcRouterID string, dstRouterID string, metricType table.MetricType, ne
 		if err != nil {
 			// The frontier is exhausted without ever reaching dstRouterID: every
 			// remaining candidate was either already calculated or pruned (e.g.
-			// non-SR-capable neighbors in updateNeighborCosts). That means no
-			// all-SR-MPLS path exists to the destination.
+			// non-SR-capable or explicitly excluded neighbors in
+			// updateNeighborCosts). That means no all-SR-MPLS path avoiding the
+			// excluded set exists to the destination.
 			return nil, fmt.Errorf("no SR-MPLS path found from %s to %s", srcRouterID, dstRouterID)
 		}
 		if calcNodeID == dstRouterID {
 			break
 		}
 
-		if err := updateNeighborCosts(calcNodeID, calculatingNodes, network, metricType); err != nil {
+		if err := updateNeighborCosts(calcNodeID, calculatingNodes, network, metricType, excluded); err != nil {
 			return nil, err
 		}
 
@@ -162,8 +220,15 @@ func initNodeMap(srcRouterID string, network map[string]*table.LsNode) (map[stri
 }
 
 // updateNeighborCosts updates costs for neighbors of the given node in SPF calculation.
-func updateNeighborCosts(calcNodeID string, calculatingNodes map[string]*node, network map[string]*table.LsNode, metricType table.MetricType) error {
+func updateNeighborCosts(calcNodeID string, calculatingNodes map[string]*node, network map[string]*table.LsNode, metricType table.MetricType, excluded map[string]struct{}) error {
 	for _, link := range network[calcNodeID].Links {
+		if _, isExcluded := excluded[link.RemoteNode.RouterID]; isExcluded {
+			// Treat an excluded node as absent from the graph entirely, same
+			// as a non-SR-capable neighbor below - it may not even be needed
+			// for the shortest remaining SR path.
+			continue
+		}
+
 		metric, err := link.Metric(metricType)
 		if err != nil {
 			return err

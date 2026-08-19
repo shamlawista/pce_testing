@@ -200,7 +200,7 @@ func TestSRPolicyIntent_AttachedOnCreationBySRPID(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	sr := newTestStateReport(t, 1, 7)
 
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport returned an error: %v", err)
@@ -221,7 +221,7 @@ func TestSRPolicyIntent_AttachedOnCreationBySRPID(t *testing.T) {
 func TestSRPolicyIntent_AttachedOnUpdateBySRPID(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
 	sr := newTestStateReport(t, 1, 1)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport returned an error: %v", err)
@@ -236,7 +236,7 @@ func TestSRPolicyIntent_AttachedOnUpdateBySRPID(t *testing.T) {
 	}
 
 	// A PCRpt for the same PLSP-ID takes the update path and must pick up the new intent.
-	ss.rememberSRPolicyIntent(2, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(2, table.PolicyTypeDynamic, table.TEMetric, nil)
 	sr2 := newTestStateReport(t, 1, 2)
 	if err := ss.handleStateReport(sr2, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport returned an error: %v", err)
@@ -277,8 +277,8 @@ func TestSRPolicyIntent_UnknownWhenNeverRemembered(t *testing.T) {
 func TestSRPolicyIntent_IndependentPerSRPID(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric)
-	ss.rememberSRPolicyIntent(2, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
+	ss.rememberSRPolicyIntent(2, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	// SRP-ID 2's PCRpt arrives first and must only consume intent 2.
 	srB := newTestStateReport(t, 20, 2)
@@ -315,7 +315,7 @@ func TestSRPolicyIntent_IndependentPerSRPID(t *testing.T) {
 
 func TestSRPolicyIntent_UnsolicitedPCRptDoesNotConsume(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	sr := newTestStateReport(t, 1, 0)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
@@ -344,7 +344,7 @@ func TestSRPolicyIntent_ClearedOnRFlagDelete(t *testing.T) {
 		t.Fatalf("handleStateReport returned an error: %v", err)
 	}
 
-	ss.rememberSRPolicyIntent(5, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(5, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	del := newTestStateReport(t, 1, 5)
 	del.LSPObject.RFlag = true
@@ -362,8 +362,8 @@ func TestSRPolicyIntent_ClearedOnRFlagDelete(t *testing.T) {
 
 func TestHandlePCErr_ForgetsReportedSRPIDIntents(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric)
-	ss.rememberSRPolicyIntent(2, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric, nil)
+	ss.rememberSRPolicyIntent(2, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
 
 	pcerrMessage, err := pcep.NewPCErrMessage(1, 1, nil)
 	if err != nil {
@@ -433,7 +433,7 @@ func TestCloseSession_ClearsSRPolicyIntents(t *testing.T) {
 	})
 
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	s := &Server{sessionList: []*Session{ss}, logger: zap.NewNop()}
 	s.closeSession(ss)
@@ -459,14 +459,14 @@ func TestCloseSession_DoesNotTouchIntentStore(t *testing.T) {
 
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), server, zap.NewNop(), nil, 0)
 	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
-	if err := ss.intentStore.save(ss.peerAddr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("failed to seed intent store: %v", err)
 	}
 
 	s := &Server{sessionList: []*Session{ss}, logger: zap.NewNop()}
 	s.closeSession(ss)
 
-	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); !ok {
+	if _, _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); !ok {
 		t.Error("expected persisted intent to survive a session close")
 	}
 }
@@ -550,7 +550,7 @@ func TestAllocateSRPID_SkipsReservedValues(t *testing.T) {
 	ss.srpIDHead = math.MaxUint32 - 1
 
 	for i, want := range []uint32{math.MaxUint32 - 1, 1, 2} {
-		got, err := ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric)
+		got, err := ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric, nil)
 		if err != nil {
 			t.Fatalf("allocation %d: unexpected error: %v", i, err)
 		}
@@ -835,8 +835,8 @@ func TestSweepExpiredSRPolicyIntents_KeepsUnexpired(t *testing.T) {
 
 func TestSweepExpiredSRPolicyIntents_KeepsUnrelatedIntent(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric)
-	ss.rememberSRPolicyIntent(2, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric, nil)
+	ss.rememberSRPolicyIntent(2, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
 
 	if _, ok := ss.takeSRPolicyIntent(1); !ok {
 		t.Fatal("expected intent 1 to be present before consuming it")
@@ -857,7 +857,7 @@ func TestIntentSweep_RunsInBackgroundAndStopsCleanly(t *testing.T) {
 	ss.startIntentSweep()
 	defer ss.stopIntentSweep()
 
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for ss.srPolicyIntentExists(1) {
@@ -897,7 +897,7 @@ func TestIntentSweep_ConcurrentWithIntentConsumption(t *testing.T) {
 		wg.Add(1)
 		go func(srpID uint32) {
 			defer wg.Done()
-			ss.rememberSRPolicyIntent(srpID, table.PolicyTypeDynamic, table.TEMetric)
+			ss.rememberSRPolicyIntent(srpID, table.PolicyTypeDynamic, table.TEMetric, nil)
 			time.Sleep(time.Millisecond)
 			ss.takeSRPolicyIntent(srpID)
 		}(i)
@@ -928,14 +928,14 @@ func TestAllocateSRPID_SkipsInUseIDsOnWraparound(t *testing.T) {
 	ss.srpIDHead = math.MaxUint32 - 1
 
 	// Pre-occupy SRP-ID 1 so the wraparound scan must skip over it.
-	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	ss.rememberSRPolicyIntent(1, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
 
-	got, err := ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric)
+	got, err := ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err != nil || got != math.MaxUint32-1 {
 		t.Fatalf("allocation 1: got (%d, %v), want (%d, nil)", got, err, uint32(math.MaxUint32-1))
 	}
 
-	got, err = ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric)
+	got, err = ss.allocateSRPID(table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err != nil {
 		t.Fatalf("allocation 2: unexpected error: %v", err)
 	}
@@ -1449,7 +1449,7 @@ func TestReoptimizeDynamicPolicies_PathChangedSendsPCUpdate(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
 
 	sr := newTestStateReport(t, 1, 7) // installs stale segments [16002, 16003]
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
@@ -1471,12 +1471,63 @@ func TestReoptimizeDynamicPolicies_PathChangedSendsPCUpdate(t *testing.T) {
 	}
 }
 
+// TestReoptimizeDynamicPolicies_ExclusionAppliedOnReoptimize is the test most
+// likely to catch a missed wiring-through of Exclude into the reoptimize
+// code path: an excluded node's own route is strictly cheaper, so if
+// reoptimizeDynamicPolicies silently dropped the persisted Exclude (e.g. by
+// calling cspf.CSPF without it), CSPF would just re-select the cheap,
+// currently-installed path and report Unchanged - this would still be a
+// passing-looking test run, just testing the wrong thing. Asserting the
+// actual segments avoid the excluded node's own SID is what makes this a
+// real behavioral check instead of a plumbing-only one.
+func TestReoptimizeDynamicPolicies_ExclusionAppliedOnReoptimize(t *testing.T) {
+	serverConn, clientConn := newTCPConnPair(t)
+	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
+
+	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003] (src=10.255.0.1, dst=10.255.0.2)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, []string{"transit-router"})
+	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
+		t.Fatalf("handleStateReport failed: %v", err)
+	}
+	if policy, found := ss.SearchSRPolicy(1); !found || !slices.Equal(policy.Exclude, []string{"transit-router"}) {
+		t.Fatalf("registered policy.Exclude = %v (found=%v), want [transit-router] - resolvePolicyIntent/updateOrCreatePolicy didn't carry it through", policy, found)
+	}
+
+	// Cheap route (cost 20) via transit-router, which will be excluded, would
+	// reproduce exactly the currently-installed [16002, 16003] if exclusion
+	// were silently ignored. transit2-router offers the only route once
+	// transit-router is genuinely removed from consideration - more
+	// expensive (cost 30), proving CSPF didn't just pick it by chance.
+	src := srCapableTEDNode("src-router", "10.255.0.1", 1)
+	transit := srCapableTEDNode("transit-router", "10.255.0.9", 2)    // SID 16002 - excluded
+	transit2 := srCapableTEDNode("transit2-router", "10.255.0.8", 10) // SID 16010 - the only viable alternative
+	dst := srCapableTEDNode("dst-router", "10.255.0.2", 3)            // SID 16003
+	linkTEDNodes(src, transit, 10)
+	linkTEDNodes(transit, dst, 10)
+	linkTEDNodes(src, transit2, 15)
+	linkTEDNodes(transit2, dst, 15)
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{
+		src.RouterID: src, transit.RouterID: transit, transit2.RouterID: transit2, dst.RouterID: dst,
+	}}
+
+	stats := ss.reoptimizeDynamicPolicies(ted)
+	if stats != (reoptimizeStats{Reoptimized: 1}) {
+		t.Fatalf("stats = %+v, want only Reoptimized=1 (exclusion should force a real path change)", stats)
+	}
+
+	got := decodePCUpdSegments(t, clientConn)
+	want := []table.Segment{table.NewSegmentSRMPLS(16010), table.NewSegmentSRMPLS(16003)}
+	if !slices.EqualFunc(got, want, table.SegmentsEqual) {
+		t.Errorf("PCUpd segments = %v, want %v (via transit2-router, avoiding excluded transit-router's SID 16002)", got, want)
+	}
+}
+
 func TestReoptimizeDynamicPolicies_PathUnchangedSendsNothing(t *testing.T) {
 	serverConn, clientConn := newTCPConnPair(t)
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
 
 	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003]
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
@@ -1504,7 +1555,7 @@ func TestReoptimizeDynamicPolicies_DestinationUnresolvableIsStale(t *testing.T) 
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
 
 	sr := newTestStateReport(t, 1, 7) // dst = 10.255.0.2
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
@@ -1526,7 +1577,7 @@ func TestReoptimizeDynamicPolicies_NoSRPathIsNoPath(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
 
 	sr := newTestStateReport(t, 1, 7)
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
@@ -1548,7 +1599,7 @@ func TestReoptimizeDynamicPolicies_ExplicitTypeNeverTouched(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), serverConn, zap.NewNop(), nil, 0)
 
 	sr := newTestStateReport(t, 1, 7) // installs [16002, 16003]
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeExplicit, table.UnspecifiedMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeExplicit, table.UnspecifiedMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
@@ -1601,13 +1652,13 @@ func TestReoptimizeDynamicPolicies_MultiplePoliciesAggregateStats(t *testing.T) 
 	staleDst := netip.MustParseAddr("10.255.0.99") // never present in the TED below
 
 	changed := newTestStateReportForAddrs(t, 1, 7, srcAddr, changedDst, []uint32{16002, 16003})
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(changed, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport (changed) failed: %v", err)
 	}
 
 	stale := newTestStateReportForAddrs(t, 2, 8, srcAddr, staleDst, []uint32{16002, 16003})
-	ss.rememberSRPolicyIntent(8, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(8, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(stale, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport (stale) failed: %v", err)
 	}
@@ -1635,7 +1686,7 @@ func TestReoptimizeDynamicPolicies_SendPCUpdateErrorCountsAsErroredNotFatal(t *t
 
 	for i, srpID := range []uint32{7, 8} {
 		sr := newTestStateReport(t, uint32(i+1), srpID)
-		ss.rememberSRPolicyIntent(srpID, table.PolicyTypeDynamic, table.TEMetric)
+		ss.rememberSRPolicyIntent(srpID, table.PolicyTypeDynamic, table.TEMetric, nil)
 		if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 			t.Fatalf("handleStateReport failed: %v", err)
 		}
@@ -1664,7 +1715,7 @@ func TestReoptimizeDynamicPolicies_SendPCUpdateErrorCountsAsErroredNotFatal(t *t
 func TestUpdateOrCreatePolicy_CreateBranchFallsBackToIntentStore(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
-	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("failed to seed intent store: %v", err)
 	}
 
@@ -1695,7 +1746,7 @@ func TestUpdateOrCreatePolicy_UpdateBranchFallsBackToIntentStore(t *testing.T) {
 		t.Fatalf("test setup invalid: expected Type unset after first registration, got %q", policy.Type)
 	}
 
-	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("failed to seed intent store: %v", err)
 	}
 
@@ -1718,10 +1769,10 @@ func TestUpdateOrCreatePolicy_UpdateBranchFallsBackToIntentStore(t *testing.T) {
 func TestUpdateOrCreatePolicy_SRPIDIntentTakesPrecedenceOverStore(t *testing.T) {
 	ss := NewSession(1, netip.MustParseAddr("10.0.255.1"), nil, zap.NewNop(), nil, 0)
 	ss.intentStore = newIntentStore(filepath.Join(t.TempDir(), "intents.json"))
-	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeExplicit, table.UnspecifiedMetric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeExplicit, table.UnspecifiedMetric, nil); err != nil {
 		t.Fatalf("failed to seed intent store: %v", err)
 	}
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 
 	sr := newTestStateReport(t, 1, 7)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
@@ -1757,7 +1808,7 @@ func TestSendPCUpdate_PersistsIntent(t *testing.T) {
 		t.Fatalf("SendPCUpdate failed: %v", err)
 	}
 
-	polType, metric, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
+	polType, metric, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
 	if !ok {
 		t.Fatal("expected intent to be persisted after SendPCUpdate")
 	}
@@ -1786,7 +1837,7 @@ func TestSendPCInitiate_PersistsIntent(t *testing.T) {
 		t.Fatalf("SendPCInitiate failed: %v", err)
 	}
 
-	polType, metric, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
+	polType, metric, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1")
 	if !ok {
 		t.Fatal("expected intent to be persisted after SendPCInitiate")
 	}
@@ -1811,7 +1862,7 @@ func TestSendPCInitiate_DeleteDoesNotPersistIntent(t *testing.T) {
 		t.Fatalf("SendPCInitiate (delete) failed: %v", err)
 	}
 
-	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
+	if _, _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
 		t.Error("expected no intent to be persisted for a delete request - it's pointless, DeleteSRPolicy's cleanup handles removal")
 	}
 }
@@ -1837,7 +1888,7 @@ func TestSendPCUpdate_FailedSendDoesNotPersistIntent(t *testing.T) {
 		t.Fatal("expected SendPCUpdate to fail once the connection is closed")
 	}
 
-	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
+	if _, _, _, ok := ss.intentStore.lookup(ss.peerAddr, "policy1"); ok {
 		t.Error("expected no intent to be persisted for a failed send")
 	}
 }
@@ -1883,7 +1934,7 @@ func TestDeleteSRPolicy_RemovesPersistedIntent(t *testing.T) {
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}
-	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, "pe01-policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("failed to seed intent store: %v", err)
 	}
 
@@ -1891,7 +1942,7 @@ func TestDeleteSRPolicy_RemovesPersistedIntent(t *testing.T) {
 	deleteReport.LSPObject.RFlag = true
 	ss.DeleteSRPolicy(*deleteReport)
 
-	if _, _, ok := ss.intentStore.lookup(ss.peerAddr, "pe01-policy1"); ok {
+	if _, _, _, ok := ss.intentStore.lookup(ss.peerAddr, "pe01-policy1"); ok {
 		t.Error("expected persisted intent to be removed after DeleteSRPolicy")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/nttcom/pola/pkg/table"
@@ -20,14 +21,14 @@ func TestIntentStore_SaveLookupRoundTrip(t *testing.T) {
 	s := newIntentStore(filepath.Join(dir, "intents.json"))
 	addr := netip.MustParseAddr("10.0.0.1")
 
-	if _, _, ok := s.lookup(addr, "unknown"); ok {
+	if _, _, _, ok := s.lookup(addr, "unknown"); ok {
 		t.Fatal("expected no entry before any save")
 	}
 
-	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
-	polType, metric, ok := s.lookup(addr, "policy1")
+	polType, metric, _, ok := s.lookup(addr, "policy1")
 	if !ok {
 		t.Fatal("expected to find the saved entry")
 	}
@@ -36,7 +37,7 @@ func TestIntentStore_SaveLookupRoundTrip(t *testing.T) {
 	}
 
 	// Different address, same name - must not match.
-	if _, _, ok := s.lookup(netip.MustParseAddr("10.0.0.2"), "policy1"); ok {
+	if _, _, _, ok := s.lookup(netip.MustParseAddr("10.0.0.2"), "policy1"); ok {
 		t.Error("expected no match for a different peer address")
 	}
 }
@@ -50,7 +51,7 @@ func TestIntentStore_SavePersistsAcrossFreshLoad(t *testing.T) {
 	addr := netip.MustParseAddr("10.0.0.1")
 
 	s := newIntentStore(path)
-	if err := s.save(addr, "mesh-a-b", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(addr, "mesh-a-b", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 
@@ -58,7 +59,7 @@ func TestIntentStore_SavePersistsAcrossFreshLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadIntentStore failed: %v", err)
 	}
-	polType, metric, ok := reloaded.lookup(addr, "mesh-a-b")
+	polType, metric, _, ok := reloaded.lookup(addr, "mesh-a-b")
 	if !ok {
 		t.Fatal("expected intent to survive a fresh load, but it was not found")
 	}
@@ -78,7 +79,7 @@ func TestIntentStore_SaveUnchangedDoesNotRewrite(t *testing.T) {
 	s := newIntentStore(path)
 	addr := netip.MustParseAddr("10.0.0.1")
 
-	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("first save failed: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -90,7 +91,7 @@ func TestIntentStore_SaveUnchangedDoesNotRewrite(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("failed to remove file: %v", err)
 	}
-	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("second (unchanged) save failed: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -104,13 +105,13 @@ func TestIntentStore_DeleteRemovesAndPersists(t *testing.T) {
 	addr := netip.MustParseAddr("10.0.0.1")
 
 	s := newIntentStore(path)
-	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	if err := s.delete(addr, "policy1"); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
-	if _, _, ok := s.lookup(addr, "policy1"); ok {
+	if _, _, _, ok := s.lookup(addr, "policy1"); ok {
 		t.Error("expected entry to be gone after delete")
 	}
 
@@ -118,7 +119,7 @@ func TestIntentStore_DeleteRemovesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadIntentStore failed: %v", err)
 	}
-	if _, _, ok := reloaded.lookup(addr, "policy1"); ok {
+	if _, _, _, ok := reloaded.lookup(addr, "policy1"); ok {
 		t.Error("expected deletion to persist across a fresh load")
 	}
 }
@@ -144,7 +145,7 @@ func TestLoadIntentStore_MissingFileIsEmptyNotError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for a missing file, got: %v", err)
 	}
-	if _, _, ok := s.lookup(netip.MustParseAddr("10.0.0.1"), "anything"); ok {
+	if _, _, _, ok := s.lookup(netip.MustParseAddr("10.0.0.1"), "anything"); ok {
 		t.Error("expected an empty store")
 	}
 }
@@ -181,7 +182,7 @@ func TestIntentStore_MetricRoundTrip(t *testing.T) {
 
 	for i, metric := range cases {
 		name := fmt.Sprintf("policy-%d", i)
-		if err := s.save(addr, name, table.PolicyTypeDynamic, metric); err != nil {
+		if err := s.save(addr, name, table.PolicyTypeDynamic, metric, nil); err != nil {
 			t.Fatalf("save failed for metric %v: %v", metric, err)
 		}
 	}
@@ -192,7 +193,7 @@ func TestIntentStore_MetricRoundTrip(t *testing.T) {
 	}
 	for i, metric := range cases {
 		name := fmt.Sprintf("policy-%d", i)
-		_, gotMetric, ok := loaded.lookup(addr, name)
+		_, gotMetric, _, ok := loaded.lookup(addr, name)
 		if !ok {
 			t.Fatalf("policy %s not found after reload", name)
 		}
@@ -202,24 +203,62 @@ func TestIntentStore_MetricRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIntentStore_ExcludeRoundTrip mirrors TestIntentStore_SavePersistsAcrossFreshLoad
+// but for Exclude specifically - the field most likely to be forgotten if a
+// future change touches Type/Metric persistence without also carrying
+// Exclude through, since it was added after those two.
+func TestIntentStore_ExcludeRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "intents.json")
+	addr := netip.MustParseAddr("10.0.0.1")
+
+	s := newIntentStore(path)
+	exclude := []string{"router-a", "router-b"}
+	if err := s.save(addr, "avoid-migration-node", table.PolicyTypeDynamic, table.IGPMetric, exclude); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	reloaded, err := loadIntentStore(path)
+	if err != nil {
+		t.Fatalf("loadIntentStore failed: %v", err)
+	}
+	_, _, gotExclude, ok := reloaded.lookup(addr, "avoid-migration-node")
+	if !ok {
+		t.Fatal("expected intent to survive a fresh load, but it was not found")
+	}
+	if !slices.Equal(gotExclude, exclude) {
+		t.Errorf("got Exclude=%v, want %v", gotExclude, exclude)
+	}
+
+	// A save with no exclusion at all must round-trip as empty, not carry
+	// over stale data from a previous save under the same key.
+	if err := s.save(addr, "no-exclusion", table.PolicyTypeDynamic, table.IGPMetric, nil); err != nil {
+		t.Fatalf("save (nil exclude) failed: %v", err)
+	}
+	_, _, gotExclude, ok = s.lookup(addr, "no-exclusion")
+	if !ok || len(gotExclude) != 0 {
+		t.Errorf("got Exclude=%v ok=%v, want empty/nil and ok=true", gotExclude, ok)
+	}
+}
+
 func TestIntentStore_SamePolicyNameDifferentPeersDontLeak(t *testing.T) {
 	dir := t.TempDir()
 	s := newIntentStore(filepath.Join(dir, "intents.json"))
 	addr1 := netip.MustParseAddr("10.0.0.1")
 	addr2 := netip.MustParseAddr("10.0.0.2")
 
-	if err := s.save(addr1, "shared-name", table.PolicyTypeDynamic, table.IGPMetric); err != nil {
+	if err := s.save(addr1, "shared-name", table.PolicyTypeDynamic, table.IGPMetric, nil); err != nil {
 		t.Fatalf("save addr1 failed: %v", err)
 	}
-	if err := s.save(addr2, "shared-name", table.PolicyTypeExplicit, table.UnspecifiedMetric); err != nil {
+	if err := s.save(addr2, "shared-name", table.PolicyTypeExplicit, table.UnspecifiedMetric, nil); err != nil {
 		t.Fatalf("save addr2 failed: %v", err)
 	}
 
-	polType1, metric1, ok := s.lookup(addr1, "shared-name")
+	polType1, metric1, _, ok := s.lookup(addr1, "shared-name")
 	if !ok || polType1 != table.PolicyTypeDynamic || metric1 != table.IGPMetric {
 		t.Errorf("addr1: got Type=%q Metric=%v ok=%v, want Dynamic/IGP/true", polType1, metric1, ok)
 	}
-	polType2, _, ok := s.lookup(addr2, "shared-name")
+	polType2, _, _, ok := s.lookup(addr2, "shared-name")
 	if !ok || polType2 != table.PolicyTypeExplicit {
 		t.Errorf("addr2: got Type=%q ok=%v, want Explicit/true", polType2, ok)
 	}
@@ -230,7 +269,7 @@ func TestIntentStore_SaveLeavesNoTempFile(t *testing.T) {
 	path := filepath.Join(dir, "intents.json")
 	s := newIntentStore(path)
 
-	if err := s.save(netip.MustParseAddr("10.0.0.1"), "policy1", table.PolicyTypeDynamic, table.TEMetric); err != nil {
+	if err := s.save(netip.MustParseAddr("10.0.0.1"), "policy1", table.PolicyTypeDynamic, table.TEMetric, nil); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
@@ -247,7 +286,7 @@ func TestIntentStore_ConcurrentAccess(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 50; i++ {
-			_ = s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric)
+			_ = s.save(addr, "policy1", table.PolicyTypeDynamic, table.TEMetric, nil)
 			_ = s.delete(addr, "policy2")
 		}
 	}()

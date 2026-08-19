@@ -473,8 +473,13 @@ type SRPolicy struct {
 	PlspId          uint32                 `protobuf:"varint,13,opt,name=plsp_id,json=plspId,proto3" json:"plsp_id,omitempty"`
 	LspId           uint32                 `protobuf:"varint,14,opt,name=lsp_id,json=lspId,proto3" json:"lsp_id,omitempty"`
 	State           SRPolicyState          `protobuf:"varint,15,opt,name=state,proto3,enum=api.pola.v1.SRPolicyState" json:"state,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Router IDs to exclude entirely from CSPF consideration when computing
+	// this policy's path (e.g. a node planned for maintenance/migration).
+	// type: dynamic only - explicit policies already fully control their own
+	// segment list, so exclusion has no meaning for them.
+	ExcludeRouterIds []string `protobuf:"bytes,16,rep,name=exclude_router_ids,json=excludeRouterIds,proto3" json:"exclude_router_ids,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SRPolicy) Reset() {
@@ -610,6 +615,13 @@ func (x *SRPolicy) GetState() SRPolicyState {
 		return x.State
 	}
 	return SRPolicyState_SR_POLICY_STATE_UNSPECIFIED
+}
+
+func (x *SRPolicy) GetExcludeRouterIds() []string {
+	if x != nil {
+		return x.ExcludeRouterIds
+	}
+	return nil
 }
 
 type CreateSRPolicyRequest struct {
@@ -2675,7 +2687,7 @@ const file_api_pola_v1_pola_proto_rawDesc = "" +
 	"unnumbered\"9\n" +
 	"\bWaypoint\x12\x1b\n" +
 	"\trouter_id\x18\x01 \x01(\tR\brouterId\x12\x10\n" +
-	"\x03sid\x18\x02 \x01(\tR\x03sid\"\xbb\x04\n" +
+	"\x03sid\x18\x02 \x01(\tR\x03sid\"\xe9\x04\n" +
 	"\bSRPolicy\x12*\n" +
 	"\x11pcep_session_addr\x18\x01 \x01(\fR\x0fpcepSessionAddr\x12\x19\n" +
 	"\bsrc_addr\x18\x02 \x01(\fR\asrcAddr\x12\x19\n" +
@@ -2695,7 +2707,8 @@ const file_api_pola_v1_pola_proto_rawDesc = "" +
 	"\twaypoints\x18\f \x03(\v2\x15.api.pola.v1.WaypointR\twaypoints\x12\x17\n" +
 	"\aplsp_id\x18\r \x01(\rR\x06plspId\x12\x15\n" +
 	"\x06lsp_id\x18\x0e \x01(\rR\x05lspId\x120\n" +
-	"\x05state\x18\x0f \x01(\x0e2\x1a.api.pola.v1.SRPolicyStateR\x05state\"\xcb\x01\n" +
+	"\x05state\x18\x0f \x01(\x0e2\x1a.api.pola.v1.SRPolicyStateR\x05state\x12,\n" +
+	"\x12exclude_router_ids\x18\x10 \x03(\tR\x10excludeRouterIds\"\xcb\x01\n" +
 	"\x15CreateSRPolicyRequest\x122\n" +
 	"\tsr_policy\x18\x01 \x01(\v2\x15.api.pola.v1.SRPolicyR\bsrPolicy\x12\x10\n" +
 	"\x03asn\x18\x02 \x01(\rR\x03asn\x120\n" +

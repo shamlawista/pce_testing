@@ -135,7 +135,8 @@ JSON formatted response
         "lspId": 1,
         "state": "active",
         "type": "dynamic",
-        "metric": "te"
+        "metric": "te",
+        "exclude": ["0000.0aff.0003"]
       }
     ]
   }
@@ -151,9 +152,10 @@ Notes:
   omitted when no matching node is found.
 - `segmentList` entries include `localAddr`/`remoteAddr` when the SID carries
   NAI information. SRv6 segments may also include `sidStructure`.
-- `type` and `metric` reflect the candidate-path settings used when the policy
-  was created by `pola sr-policy add`. They are omitted for policies discovered
-  from the router or after a polad restart.
+- `type`, `metric`, and `exclude` reflect the candidate-path settings used when
+  the policy was created by `pola sr-policy add`. They are omitted for
+  policies discovered from the router or after a polad restart, and `exclude`
+  is only ever populated for `type: dynamic` policies.
 
 ### pola sr-policy add -f `filepath`
 
@@ -182,6 +184,38 @@ JSON formatted response
   "status": "success"
 }
 ```
+
+##### Excluding routers from path computation
+
+Add `exclude` to keep one or more routers out of CSPF consideration entirely
+for this policy - e.g. to route around a node ahead of a planned maintenance
+or migration. An excluded router is treated as absent from the topology, not
+merely deprioritized: CSPF will use a higher-cost path around it, or fail
+cleanly if no all-SR path avoiding it exists.
+
+```yaml
+asn: 65000
+srPolicy:
+  pcepSessionAddr: 192.0.2.1
+  name: policy-name
+  srcRouterID: 0000.0aff.0001
+  dstRouterID: 0000.0aff.0004
+  color: 100
+  type: dynamic
+  metric: igp
+  exclude:
+    - routerID: 0000.0aff.0002
+    - routerID: 0000.0aff.0003
+```
+
+`exclude` only applies to `type: dynamic` (an explicit `segmentList` already
+fully controls its own path) and is rejected if it names the policy's own
+`srcRouterID`/`dstRouterID` or an explicit `waypoints[].routerID` - excluding a
+node the path is required to pass through is a contradiction in the request
+itself, reported as a clean error rather than a "no path found" result.
+The exclusion is persisted like `type`/`metric` and reapplied on every
+reoptimization triggered by a later topology change, so it isn't silently
+dropped the next time the path is recomputed.
 
 #### Case: Explicit Path
 

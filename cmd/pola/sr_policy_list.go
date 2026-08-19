@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -65,6 +66,9 @@ func showSRPolicyList(cmd *cobra.Command, args []string) error {
 					}
 					if policy.Metric != table.UnspecifiedMetric {
 						fmt.Printf("    Metric: %s\n", policy.Metric.DisplayString())
+					}
+					if len(policy.Exclude) > 0 {
+						fmt.Printf("    Exclude: %s\n", strings.Join(policy.Exclude, ", "))
 					}
 					fmt.Printf("    SrcAddr: %s\n", srcDstDisplay(policy.SrcAddr.String(), policy.SrcRouterID))
 					fmt.Printf("    DstAddr: %s\n", srcDstDisplay(policy.DstAddr.String(), policy.DstRouterID))

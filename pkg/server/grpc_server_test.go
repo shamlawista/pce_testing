@@ -793,6 +793,138 @@ func TestGetSRPolicyList_RoundTripsTypeAndMetric(t *testing.T) {
 	assert.Equal(t, pb.MetricType_METRIC_TYPE_UNSPECIFIED, unknown.GetMetric())
 }
 
+// TestGetSRPolicyList_RoundTripsExclude mirrors
+// TestGetSRPolicyList_RoundTripsTypeAndMetric but for Exclude specifically,
+// proving it round-trips through the real GetSRPolicyList handler rather than
+// just compiling alongside Type/Metric.
+func TestGetSRPolicyList_RoundTripsExclude(t *testing.T) {
+	seg, err := table.NewSegment("16003")
+	require.NoError(t, err)
+
+	excluded := table.NewSRPolicy(1, "policy-excluded", []table.Segment{seg}, netip.Addr{}, netip.Addr{}, 100, 100, 0, table.PolicyUp)
+	excluded.Type = table.PolicyTypeDynamic
+	excluded.Metric = table.IGPMetric
+	excluded.Exclude = []string{"router-a", "router-b"}
+
+	noExclusion := table.NewSRPolicy(2, "policy-no-exclusion", []table.Segment{seg}, netip.Addr{}, netip.Addr{}, 200, 100, 0, table.PolicyUp)
+	noExclusion.Type = table.PolicyTypeDynamic
+	noExclusion.Metric = table.IGPMetric
+
+	s := &APIServer{
+		pce: &Server{sessionList: []*Session{
+			{
+				peerAddr:   netip.MustParseAddr("10.0.0.1"),
+				isSynced:   true,
+				srPolicies: []*table.SRPolicy{excluded, noExclusion},
+			},
+		}},
+		logger: zap.NewNop(),
+	}
+
+	resp, err := s.GetSRPolicyList(context.Background(), &pb.GetSRPolicyListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Sessions, 1)
+	require.Len(t, resp.Sessions[0].GetSrPolicies(), 2)
+
+	byColor := map[uint32]*pb.SRPolicy{}
+	for _, p := range resp.Sessions[0].GetSrPolicies() {
+		byColor[p.GetColor()] = p
+	}
+
+	withExclude := byColor[100]
+	require.NotNil(t, withExclude)
+	assert.Equal(t, []string{"router-a", "router-b"}, withExclude.GetExcludeRouterIds())
+
+	withoutExclude := byColor[200]
+	require.NotNil(t, withoutExclude)
+	assert.Empty(t, withoutExclude.GetExcludeRouterIds())
+}
+
+// TestGetSegmentList_ExplicitRejectsExclude confirms getSegmentList itself -
+// not just callers that happen to route through it - rejects a non-empty
+// ExcludeRouterIds for type: explicit. Before this test, that check was only
+// ever exercised transitively via CreateSRPolicy-level tests.
+func TestGetSegmentList_ExplicitRejectsExclude(t *testing.T) {
+	inputSRPolicy := &pb.SRPolicy{
+		Type:             pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT,
+		SegmentList:      []*pb.Segment{{Sid: "16003"}},
+		ExcludeRouterIds: []string{"some-router"},
+	}
+
+	_, err := getSegmentList(inputSRPolicy, &table.LsTED{Nodes: map[string]*table.LsNode{}}, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exclude is only meaningful for type: dynamic")
+}
+
+// TestGetSegmentList_DynamicAppliesExclusion confirms getSegmentList's
+// dynamic branch actually threads ExcludeRouterIds into cspf.CSPF, rather
+// than only compiling with the right signature. A->B->D is the cheapest
+// route, but B is excluded, so the only valid result is A->C->D.
+func TestGetSegmentList_DynamicAppliesExclusion(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	c := srCapableTEDNode("C", "10.255.0.3", 1)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+
+	linkTEDNodes(a, b, 1) // cheapest first hop, but B is excluded below
+	linkTEDNodes(b, d, 1) // A->B->D costs 2 total - would win if B weren't excluded
+	linkTEDNodes(a, c, 10)
+	linkTEDNodes(c, d, 1) // A->C->D costs 11 total - the only path avoiding B
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}}
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:             pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId:      "A",
+		DstRouterId:      "D",
+		Metric:           pb.MetricType_METRIC_TYPE_TE,
+		ExcludeRouterIds: []string{"B"},
+	}
+
+	segmentList, err := getSegmentList(inputSRPolicy, ted, false)
+	require.NoError(t, err)
+
+	bSID, _ := b.NodeSegment()
+	for _, seg := range segmentList {
+		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "excluded node B's own SID must not appear in the computed path: %v", segmentList)
+	}
+}
+
+// TestGetSegmentList_DynamicWaypointsAppliesExclusion is the loose-source-
+// routing sibling of TestGetSegmentList_DynamicAppliesExclusion, confirming
+// exclusion also threads through the CSPFWithLooseSourceRouting branch,
+// which getSegmentList selects whenever waypoints are present.
+func TestGetSegmentList_DynamicWaypointsAppliesExclusion(t *testing.T) {
+	a := srCapableTEDNode("A", "10.255.0.1", 0)
+	b := srCapableTEDNode("B", "10.255.0.2", 3)
+	c := srCapableTEDNode("C", "10.255.0.3", 1)
+	d := srCapableTEDNode("D", "10.255.0.4", 2)
+
+	linkTEDNodes(a, b, 1)
+	linkTEDNodes(b, c, 1) // A->B->C costs 2 total - would win if B weren't excluded
+	linkTEDNodes(a, d, 10)
+	linkTEDNodes(d, c, 1) // A->D->C costs 11 total - the only path avoiding B
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}}
+
+	inputSRPolicy := &pb.SRPolicy{
+		Type:             pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC,
+		SrcRouterId:      "A",
+		DstRouterId:      "C",
+		Metric:           pb.MetricType_METRIC_TYPE_TE,
+		Waypoints:        []*pb.Waypoint{{RouterId: "D"}},
+		ExcludeRouterIds: []string{"B"},
+	}
+
+	segmentList, err := getSegmentList(inputSRPolicy, ted, false)
+	require.NoError(t, err)
+
+	bSID, _ := b.NodeSegment()
+	for _, seg := range segmentList {
+		assert.NotEqual(t, bSID.SidString(), seg.SidString(), "excluded node B's own SID must not appear in the computed path: %v", segmentList)
+	}
+}
+
 func TestConvertSegment_CarriesSRv6NAIAndStructure(t *testing.T) {
 	sid := netip.MustParseAddr("2001:db8:1005::")
 	seg := table.SegmentSRv6{

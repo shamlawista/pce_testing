@@ -73,6 +73,12 @@ message SRPolicy {
   uint32 plsp_id = 13;
   uint32 lsp_id = 14;
   SRPolicyState state = 15;
+
+  // Router IDs to exclude entirely from CSPF consideration when computing
+  // this policy's path (e.g. a node planned for maintenance/migration).
+  // type: dynamic only - explicit policies already fully control their own
+  // segment list, so exclusion has no meaning for them.
+  repeated string exclude_router_ids = 16;
 }
 
 message CreateSRPolicyRequest {

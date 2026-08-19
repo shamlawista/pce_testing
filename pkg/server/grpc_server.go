@@ -279,6 +279,7 @@ func sendSRPolicyRequest(s *APIServer, input *pb.CreateSRPolicyRequest, segmentL
 		Preference:  100,
 		Type:        policyType,
 		Metric:      metricType,
+		Exclude:     inputSRPolicy.GetExcludeRouterIds(),
 	}
 
 	if id, exists := pcepSession.SearchPlspIDByName(inputSRPolicy.GetPolicyName()); exists {
@@ -567,6 +568,9 @@ func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool)
 		if len(inputSRPolicy.GetSegmentList()) == 0 {
 			return nil, errors.New("no segments in SRPolicy input")
 		}
+		if len(inputSRPolicy.GetExcludeRouterIds()) > 0 {
+			return nil, errors.New("exclude is only meaningful for type: dynamic policies - an explicit segment list already fully controls the path")
+		}
 		for _, segment := range inputSRPolicy.GetSegmentList() {
 			sid, err := newEnrichedSegment(segment, usidMode)
 			if err != nil {
@@ -579,6 +583,7 @@ func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool)
 		if err != nil {
 			return nil, err
 		}
+		exclude := inputSRPolicy.GetExcludeRouterIds()
 		pbWPs := inputSRPolicy.GetWaypoints()
 		if len(pbWPs) > 0 {
 			// Convert to table.Waypoint
@@ -596,6 +601,7 @@ func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool)
 				waypoints,
 				metricType,
 				ted,
+				exclude,
 			)
 		} else {
 			return cspf.CSPF(
@@ -603,6 +609,7 @@ func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool)
 				inputSRPolicy.GetDstRouterId(),
 				metricType,
 				ted,
+				exclude,
 			)
 		}
 	default:
@@ -804,18 +811,19 @@ func (s *APIServer) GetSRPolicyList(ctx context.Context, req *pb.GetSRPolicyList
 
 func (s *APIServer) buildPBSRPolicy(peerAddr netip.Addr, policy *table.SRPolicy, routerIDIndex map[netip.Addr]string) *pb.SRPolicy {
 	srPolicy := &pb.SRPolicy{
-		PcepSessionAddr: peerAddr.AsSlice(),
-		SegmentList:     make([]*pb.Segment, 0, len(policy.SegmentList)),
-		Color:           policy.Color,
-		Preference:      policy.Preference,
-		PolicyName:      policy.Name,
-		SrcAddr:         policy.SrcAddr.AsSlice(),
-		DstAddr:         policy.DstAddr.AsSlice(),
-		PlspId:          policy.PlspID,
-		LspId:           uint32(policy.LSPID),
-		State:           toPBPolicyState(policy.State),
-		Type:            toPBPolicyType(policy.Type),
-		Metric:          toPBMetricType(policy.Metric),
+		PcepSessionAddr:  peerAddr.AsSlice(),
+		SegmentList:      make([]*pb.Segment, 0, len(policy.SegmentList)),
+		Color:            policy.Color,
+		Preference:       policy.Preference,
+		PolicyName:       policy.Name,
+		SrcAddr:          policy.SrcAddr.AsSlice(),
+		DstAddr:          policy.DstAddr.AsSlice(),
+		PlspId:           policy.PlspID,
+		LspId:            uint32(policy.LSPID),
+		State:            toPBPolicyState(policy.State),
+		Type:             toPBPolicyType(policy.Type),
+		Metric:           toPBMetricType(policy.Metric),
+		ExcludeRouterIds: policy.Exclude,
 	}
 
 	srPolicy.SrcRouterId = routerIDIndex[policy.SrcAddr]

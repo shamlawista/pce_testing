@@ -77,12 +77,13 @@ func (ss *Session) setTED(ted *table.LsTED) {
 type srPolicyIntent struct {
 	polType   table.PolicyType
 	metric    table.MetricType
+	exclude   []string
 	expiresAt time.Time
 }
 
 // rememberSRPolicyIntent records the intent for an SRP-ID.
 // SRP-ID 0 is reserved for unsolicited PCRpt messages and is ignored.
-func (ss *Session) rememberSRPolicyIntent(srpID uint32, polType table.PolicyType, metric table.MetricType) {
+func (ss *Session) rememberSRPolicyIntent(srpID uint32, polType table.PolicyType, metric table.MetricType, exclude []string) {
 	if srpID == 0 {
 		return
 	}
@@ -91,7 +92,7 @@ func (ss *Session) rememberSRPolicyIntent(srpID uint32, polType table.PolicyType
 	if ss.srPolicyIntents == nil {
 		ss.srPolicyIntents = make(map[uint32]srPolicyIntent)
 	}
-	ss.srPolicyIntents[srpID] = srPolicyIntent{polType: polType, metric: metric, expiresAt: time.Now().Add(ss.srPolicyIntentTTL)}
+	ss.srPolicyIntents[srpID] = srPolicyIntent{polType: polType, metric: metric, exclude: exclude, expiresAt: time.Now().Add(ss.srPolicyIntentTTL)}
 }
 
 func (ss *Session) srPolicyIntentExists(srpID uint32) bool {
@@ -612,7 +613,10 @@ func (ss *Session) computePathFromTED(sr pcep.StateReport) ([]table.Segment, err
 		zap.String("dstRouterID", dstRouterID),
 		zap.String("metricType", metricType.String()))
 
-	segmentList, err := cspf.CSPF(srcRouterID, dstRouterID, metricType, ted)
+	// This path recomputes a route for an LSP the PCC itself reported (e.g. a
+	// PCC-delegated, router-initiated LSP), not a Pola-issued `type: dynamic`
+	// policy - there's no exclusion intent associated with it, so none applies.
+	segmentList, err := cspf.CSPF(srcRouterID, dstRouterID, metricType, ted, nil)
 	if err != nil {
 		return nil, fmt.Errorf("CSPF computation failed: %w", err)
 	}
@@ -750,7 +754,7 @@ func nextUnusedSRPID(head, max uint32, used func(uint32) bool) (srpID uint32, ne
 
 // allocateSRPID allocates an unused SRP-ID and records its intent.
 // In-use IDs are skipped on wraparound.
-func (ss *Session) allocateSRPID(polType table.PolicyType, metric table.MetricType) (uint32, error) {
+func (ss *Session) allocateSRPID(polType table.PolicyType, metric table.MetricType, exclude []string) (uint32, error) {
 	ss.srpIDMu.Lock()
 	defer ss.srpIDMu.Unlock()
 
@@ -759,12 +763,12 @@ func (ss *Session) allocateSRPID(polType table.PolicyType, metric table.MetricTy
 		return 0, err
 	}
 	ss.srpIDHead = nextHead
-	ss.rememberSRPolicyIntent(srpID, polType, metric)
+	ss.rememberSRPolicyIntent(srpID, polType, metric, exclude)
 	return srpID, nil
 }
 
 func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error {
-	srpID, err := ss.allocateSRPID(srPolicy.Type, srPolicy.Metric)
+	srpID, err := ss.allocateSRPID(srPolicy.Type, srPolicy.Metric, srPolicy.Exclude)
 	if err != nil {
 		return err
 	}
@@ -783,13 +787,13 @@ func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error
 		// Persisting intent for a policy being torn down is pointless -
 		// DeleteSRPolicy's cleanup removes any existing entry once the
 		// confirming PCRpt arrives.
-		ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric)
+		ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric, srPolicy.Exclude)
 	}
 	return nil
 }
 
 func (ss *Session) SendPCUpdate(srPolicy table.SRPolicy) error {
-	srpID, err := ss.allocateSRPID(srPolicy.Type, srPolicy.Metric)
+	srpID, err := ss.allocateSRPID(srPolicy.Type, srPolicy.Metric, srPolicy.Exclude)
 	if err != nil {
 		return err
 	}
@@ -804,25 +808,25 @@ func (ss *Session) SendPCUpdate(srPolicy table.SRPolicy) error {
 		ss.forgetSRPolicyIntent(srpID)
 		return err
 	}
-	ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric)
+	ss.persistIntent(srPolicy.Name, srPolicy.Type, srPolicy.Metric, srPolicy.Exclude)
 	return nil
 }
 
-// persistIntent durably records a policy's Type/Metric so it survives a
-// polad restart or a plain PCEP resync (state-sync PCRpts never correlate
-// to the ephemeral, SRP-ID-keyed intent). A no-op if persistence is
-// disabled or Type is unset. Persisted only after a confirmed successful
+// persistIntent durably records a policy's Type/Metric/Exclude so it
+// survives a polad restart or a plain PCEP resync (state-sync PCRpts never
+// correlate to the ephemeral, SRP-ID-keyed intent). A no-op if persistence
+// is disabled or Type is unset. Persisted only after a confirmed successful
 // send - unlike the ephemeral SRP-ID intent (which must exist before the
 // send, to win a race with the PCC's reply), the durable store has no such
 // race, so there's no reason to persist intent for a request that never
 // actually left the box. Failures are logged, never fatal - a persistence
 // hiccup must not become a new availability risk for a feature whose whole
 // point is resilience.
-func (ss *Session) persistIntent(name string, polType table.PolicyType, metric table.MetricType) {
+func (ss *Session) persistIntent(name string, polType table.PolicyType, metric table.MetricType, exclude []string) {
 	if ss.intentStore == nil || polType == "" {
 		return
 	}
-	if err := ss.intentStore.save(ss.peerAddr, name, polType, metric); err != nil {
+	if err := ss.intentStore.save(ss.peerAddr, name, polType, metric, exclude); err != nil {
 		ss.logger.Warn("failed to persist SR policy intent", zap.String("policyName", name), zap.Error(err))
 	}
 }
@@ -893,18 +897,18 @@ func resolvePolicyState(oflag uint8) table.PolicyState {
 	}
 }
 
-// resolvePolicyIntent resolves Type/Metric for a state report: the
+// resolvePolicyIntent resolves Type/Metric/Exclude for a state report: the
 // ephemeral SRP-ID intent for this specific request takes precedence;
 // falling back to the durable per-peer/per-name store covers both a
 // resync/restart (state-sync PCRpts carry SRP-ID 0, which never correlates
 // to a remembered intent) and a live session where the PCC's confirming
 // PCRpt arrives after the ephemeral intent's TTL already swept it.
-func (ss *Session) resolvePolicyIntent(srpID uint32, name string) (table.PolicyType, table.MetricType, bool) {
+func (ss *Session) resolvePolicyIntent(srpID uint32, name string) (table.PolicyType, table.MetricType, []string, bool) {
 	if intent, ok := ss.takeSRPolicyIntent(srpID); ok {
-		return intent.polType, intent.metric, true
+		return intent.polType, intent.metric, intent.exclude, true
 	}
 	if ss.intentStore == nil {
-		return "", table.UnspecifiedMetric, false
+		return "", table.UnspecifiedMetric, nil, false
 	}
 	return ss.intentStore.lookup(ss.peerAddr, name)
 }
@@ -939,9 +943,10 @@ func (ss *Session) updateOrCreatePolicy(sr pcep.StateReport, segmentList []table
 				LSPID:       lspID,
 				State:       state,
 			})
-			if polType, metric, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
+			if polType, metric, exclude, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
 				p.Type = polType
 				p.Metric = metric
+				p.Exclude = exclude
 			}
 		}
 		return nil
@@ -965,9 +970,10 @@ func (ss *Session) updateOrCreatePolicy(sr pcep.StateReport, segmentList []table
 	}
 
 	p := table.NewSRPolicy(sr.LSPObject.PlspID, sr.LSPObject.Name, segmentList, src, dst, color, preference, lspID, state)
-	if polType, metric, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
+	if polType, metric, exclude, ok := ss.resolvePolicyIntent(sr.SrpObject.SrpID, sr.LSPObject.Name); ok {
 		p.Type = polType
 		p.Metric = metric
+		p.Exclude = exclude
 	}
 	ss.srPolicies = append(ss.srPolicies, p)
 	return nil
@@ -1092,7 +1098,10 @@ func (ss *Session) reoptimizeDynamicPolicies(ted *table.LsTED) reoptimizeStats {
 			continue
 		}
 
-		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted)
+		// policy.Exclude is intent, exactly like Type/Metric - it must be
+		// reapplied on every reoptimization, not just the original request,
+		// or a topology change would silently route the excluded node back in.
+		computed, err := cspf.CSPF(srcRouterID, dstRouterID, policy.Metric, ted, policy.Exclude)
 		if err != nil {
 			// e.g. no all-SR path currently exists - an expected topology
 			// state (mirrors cspf.CSPF's own clean-error semantics), not a

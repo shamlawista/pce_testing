@@ -67,7 +67,7 @@ func newTestDynamicSession(t *testing.T, sessionID uint8, synced bool) (ss *Sess
 	}
 
 	sr := newTestStateReport(t, 1, 7)
-	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric)
+	ss.rememberSRPolicyIntent(7, table.PolicyTypeDynamic, table.TEMetric, nil)
 	if err := ss.handleStateReport(sr, pcep.NewPCRptMessage()); err != nil {
 		t.Fatalf("handleStateReport failed: %v", err)
 	}

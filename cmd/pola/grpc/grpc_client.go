@@ -374,6 +374,7 @@ func convertSRPolicy(p *pb.SRPolicy) (table.SRPolicy, error) {
 		State:       policyStateFromPB(p.GetState()),
 		Type:        policyTypeFromPB(p.GetType()),
 		Metric:      metricTypeFromPB(p.GetMetric()),
+		Exclude:     p.GetExcludeRouterIds(),
 	}, nil
 }
 

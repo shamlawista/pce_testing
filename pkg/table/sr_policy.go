@@ -47,6 +47,10 @@ type SRPolicy struct {
 	// Type and Metric are only known for policies created by Pola.
 	Type   PolicyType `json:"type,omitempty"`
 	Metric MetricType `json:"metric,omitempty"`
+	// Exclude lists router IDs CSPF must treat as absent from the graph when
+	// (re)computing this policy's path. Only meaningful for PolicyTypeDynamic;
+	// always empty for PolicyTypeExplicit, whose segment list is caller-controlled.
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 func NewSRPolicy(
