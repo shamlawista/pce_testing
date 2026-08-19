@@ -166,9 +166,10 @@ func newEnrichedSegment(segment *pb.Segment, usidMode bool) (table.Segment, erro
 	return seg, nil
 }
 
-func buildSegmentList(s *APIServer, input *pb.CreateSRPolicyRequest, disablePathCompute bool) ([]table.Segment, netip.Addr, netip.Addr, error) {
+func buildSegmentList(s *APIServer, input *pb.CreateSRPolicyRequest, disablePathCompute bool) ([]table.Segment, []string, netip.Addr, netip.Addr, error) {
 	var srcAddr, dstAddr netip.Addr
 	var segmentList []table.Segment
+	var exclude []string
 	var err error
 
 	inputSRPolicy := input.GetSrPolicy()
@@ -176,40 +177,40 @@ func buildSegmentList(s *APIServer, input *pb.CreateSRPolicyRequest, disablePath
 	if !disablePathCompute {
 		ted := s.pce.TED()
 		if ted == nil {
-			return nil, netip.Addr{}, netip.Addr{}, errors.New("ted is disabled")
+			return nil, nil, netip.Addr{}, netip.Addr{}, errors.New("ted is disabled")
 		}
 
 		if len(ted.Nodes) == 0 {
-			return nil, netip.Addr{}, netip.Addr{}, errors.New("no node in TED")
+			return nil, nil, netip.Addr{}, netip.Addr{}, errors.New("no node in TED")
 		}
 
 		// Request ASN check
 		for _, node := range ted.Nodes {
 			if node.ASN != input.GetAsn() {
-				return nil, netip.Addr{}, netip.Addr{}, fmt.Errorf("request ASN %d does not match ted ASN %d", input.GetAsn(), node.ASN)
+				return nil, nil, netip.Addr{}, netip.Addr{}, fmt.Errorf("request ASN %d does not match ted ASN %d", input.GetAsn(), node.ASN)
 			}
 			break // All nodes are expected to share the same ASN; check only the first
 		}
 
 		srcAddr, err = getLoopbackAddr(ted, inputSRPolicy.GetSrcRouterId())
 		if err != nil {
-			return nil, netip.Addr{}, netip.Addr{}, err
+			return nil, nil, netip.Addr{}, netip.Addr{}, err
 		}
 
 		dstAddr, err = getLoopbackAddr(ted, inputSRPolicy.GetDstRouterId())
 		if err != nil {
-			return nil, netip.Addr{}, netip.Addr{}, err
+			return nil, nil, netip.Addr{}, netip.Addr{}, err
 		}
 
-		segmentList, err = getSegmentList(inputSRPolicy, ted, s.usidMode)
+		segmentList, exclude, err = getSegmentList(inputSRPolicy, ted, s.usidMode, s.pce.globalExcludeList())
 		if err != nil {
-			return nil, netip.Addr{}, netip.Addr{}, err
+			return nil, nil, netip.Addr{}, netip.Addr{}, err
 		}
 	} else {
 		var ok bool
 		srcAddr, ok = netip.AddrFromSlice(inputSRPolicy.GetSrcAddr())
 		if !ok {
-			return nil, netip.Addr{}, netip.Addr{}, fmt.Errorf(
+			return nil, nil, netip.Addr{}, netip.Addr{}, fmt.Errorf(
 				"invalid source address %v",
 				inputSRPolicy.GetSrcAddr(),
 			)
@@ -217,7 +218,7 @@ func buildSegmentList(s *APIServer, input *pb.CreateSRPolicyRequest, disablePath
 
 		dstAddr, ok = netip.AddrFromSlice(inputSRPolicy.GetDstAddr())
 		if !ok {
-			return nil, netip.Addr{}, netip.Addr{}, fmt.Errorf(
+			return nil, nil, netip.Addr{}, netip.Addr{}, fmt.Errorf(
 				"invalid destination address %v",
 				inputSRPolicy.GetDstAddr(),
 			)
@@ -226,13 +227,13 @@ func buildSegmentList(s *APIServer, input *pb.CreateSRPolicyRequest, disablePath
 		for _, segment := range inputSRPolicy.GetSegmentList() {
 			seg, err := newEnrichedSegment(segment, s.usidMode)
 			if err != nil {
-				return nil, netip.Addr{}, netip.Addr{}, err
+				return nil, nil, netip.Addr{}, netip.Addr{}, err
 			}
 			segmentList = append(segmentList, seg)
 		}
 	}
 
-	return segmentList, srcAddr, dstAddr, nil
+	return segmentList, exclude, srcAddr, dstAddr, nil
 }
 
 // resolveSRPolicyIntent resolves the candidate-path type and metric per RFC 9256 §2.4.2.
@@ -257,7 +258,7 @@ func resolveSRPolicyIntent(inputSRPolicy *pb.SRPolicy, disablePathCompute bool) 
 	}
 }
 
-func sendSRPolicyRequest(s *APIServer, input *pb.CreateSRPolicyRequest, segmentList []table.Segment, srcAddr, dstAddr netip.Addr, disablePathCompute bool) error {
+func sendSRPolicyRequest(s *APIServer, input *pb.CreateSRPolicyRequest, segmentList []table.Segment, exclude []string, srcAddr, dstAddr netip.Addr, disablePathCompute bool) error {
 	inputSRPolicy := input.GetSrPolicy()
 
 	pcepSession, err := getSyncedPCEPSession(s.pce, inputSRPolicy.GetPcepSessionAddr())
@@ -279,6 +280,7 @@ func sendSRPolicyRequest(s *APIServer, input *pb.CreateSRPolicyRequest, segmentL
 		Preference:  100,
 		Type:        policyType,
 		Metric:      metricType,
+		Exclude:     exclude,
 	}
 
 	if id, exists := pcepSession.SearchPlspIDByName(inputSRPolicy.GetPolicyName()); exists {
@@ -303,7 +305,7 @@ func (s *APIServer) CreateSRPolicy(ctx context.Context, req *pb.CreateSRPolicyRe
 		return nil, fmt.Errorf("failed to validate SR policy creation: %w", err)
 	}
 
-	segmentList, srcAddr, dstAddr, err := buildSegmentList(s, req, disablePathCompute)
+	segmentList, exclude, srcAddr, dstAddr, err := buildSegmentList(s, req, disablePathCompute)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build segment list: %w", err)
 	}
@@ -323,7 +325,7 @@ func (s *APIServer) CreateSRPolicy(ctx context.Context, req *pb.CreateSRPolicyRe
 		return nil, err
 	}
 
-	if err := sendSRPolicyRequest(s, req, segmentList, srcAddr, dstAddr, disablePathCompute); err != nil {
+	if err := sendSRPolicyRequest(s, req, segmentList, exclude, srcAddr, dstAddr, disablePathCompute); err != nil {
 		return nil, fmt.Errorf("failed to send SR policy request: %w", err)
 	}
 
@@ -559,26 +561,42 @@ func getLoopbackAddr(ted *table.LsTED, routerID string) (netip.Addr, error) {
 	return node.LoopbackAddr()
 }
 
-func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool) ([]table.Segment, error) {
+// getSegmentList returns the segment list for inputSRPolicy, plus the fully
+// resolved set of excluded router IDs actually used (for type: dynamic) -
+// including any exclude_sids entries resolved against the TED - so the
+// caller can persist exactly what was applied. globalExclude is the
+// server-wide node-exclusion set (see globalExcludeStore); it is folded
+// into the CSPF call but deliberately excluded from the returned/persisted
+// value - see mergeGlobalExclude.
+func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool, globalExclude []string) ([]table.Segment, []string, error) {
 	var segmentList []table.Segment
 
 	switch inputSRPolicy.GetType() {
 	case pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT:
 		if len(inputSRPolicy.GetSegmentList()) == 0 {
-			return nil, errors.New("no segments in SRPolicy input")
+			return nil, nil, errors.New("no segments in SRPolicy input")
+		}
+		if len(inputSRPolicy.GetExcludeRouterIds()) > 0 || len(inputSRPolicy.GetExcludeSids()) > 0 {
+			return nil, nil, errors.New("exclude is only meaningful for type: dynamic policies - an explicit segment list already fully controls the path")
 		}
 		for _, segment := range inputSRPolicy.GetSegmentList() {
 			sid, err := newEnrichedSegment(segment, usidMode)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			segmentList = append(segmentList, sid)
 		}
 	case pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC:
 		metricType, err := getMetricType(inputSRPolicy.GetMetric())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		exclude, err := resolveExcludedRouterIDs(ted, inputSRPolicy.GetExcludeRouterIds(), inputSRPolicy.GetExcludeSids())
+		if err != nil {
+			return nil, nil, err
+		}
+
+		protected := []string{inputSRPolicy.GetSrcRouterId(), inputSRPolicy.GetDstRouterId()}
 		pbWPs := inputSRPolicy.GetWaypoints()
 		if len(pbWPs) > 0 {
 			// Convert to table.Waypoint
@@ -588,28 +606,72 @@ func getSegmentList(inputSRPolicy *pb.SRPolicy, ted *table.LsTED, usidMode bool)
 					RouterID: w.GetRouterId(),
 					SID:      w.GetSid(), // optional
 				})
+				protected = append(protected, w.GetRouterId())
 			}
 
-			return cspf.CSPFWithLooseSourceRouting(
+			cspfExclude := mergeGlobalExclude(exclude, globalExclude, protected)
+			segmentList, err = cspf.CSPFWithLooseSourceRouting(
 				inputSRPolicy.GetSrcRouterId(),
 				inputSRPolicy.GetDstRouterId(),
 				waypoints,
 				metricType,
 				ted,
+				cspfExclude,
 			)
 		} else {
-			return cspf.CSPF(
+			cspfExclude := mergeGlobalExclude(exclude, globalExclude, protected)
+			segmentList, err = cspf.CSPF(
 				inputSRPolicy.GetSrcRouterId(),
 				inputSRPolicy.GetDstRouterId(),
 				metricType,
 				ted,
+				cspfExclude,
 			)
 		}
+		if err != nil {
+			return nil, nil, err
+		}
+		return segmentList, exclude, nil
 	default:
-		return nil, errors.New("undefined SR Policy type")
+		return nil, nil, errors.New("undefined SR Policy type")
 	}
 
-	return segmentList, nil
+	return segmentList, nil, nil
+}
+
+// resolveExcludedRouterIDs merges explicit router-ID excludes with SID-based
+// excludes resolved against the TED, so CSPF only ever deals with router IDs.
+func resolveExcludedRouterIDs(ted *table.LsTED, routerIDs, sids []string) ([]string, error) {
+	if len(sids) == 0 {
+		return routerIDs, nil
+	}
+
+	resolved := make([]string, 0, len(routerIDs)+len(sids))
+	resolved = append(resolved, routerIDs...)
+	for _, sid := range sids {
+		routerID, err := findRouterIDBySID(ted, sid)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, routerID)
+	}
+	return resolved, nil
+}
+
+// findRouterIDBySID returns the router ID of the TED node whose Node-SID
+// matches sid, for resolving an exclude_sids entry to the router ID form
+// CSPF and intent persistence use internally.
+func findRouterIDBySID(ted *table.LsTED, sid string) (string, error) {
+	for _, node := range ted.Nodes {
+		nodeSID, err := node.NodeSegment()
+		if err != nil {
+			continue
+		}
+		if nodeSID.SidString() == sid {
+			return node.RouterID, nil
+		}
+	}
+	return "", fmt.Errorf("excluded SID %q not found in TED, cannot resolve to a router ID", sid)
 }
 
 func getMetricType(metricType pb.MetricType) (table.MetricType, error) {
@@ -804,18 +866,19 @@ func (s *APIServer) GetSRPolicyList(ctx context.Context, req *pb.GetSRPolicyList
 
 func (s *APIServer) buildPBSRPolicy(peerAddr netip.Addr, policy *table.SRPolicy, routerIDIndex map[netip.Addr]string) *pb.SRPolicy {
 	srPolicy := &pb.SRPolicy{
-		PcepSessionAddr: peerAddr.AsSlice(),
-		SegmentList:     make([]*pb.Segment, 0, len(policy.SegmentList)),
-		Color:           policy.Color,
-		Preference:      policy.Preference,
-		PolicyName:      policy.Name,
-		SrcAddr:         policy.SrcAddr.AsSlice(),
-		DstAddr:         policy.DstAddr.AsSlice(),
-		PlspId:          policy.PlspID,
-		LspId:           uint32(policy.LSPID),
-		State:           toPBPolicyState(policy.State),
-		Type:            toPBPolicyType(policy.Type),
-		Metric:          toPBMetricType(policy.Metric),
+		PcepSessionAddr:  peerAddr.AsSlice(),
+		SegmentList:      make([]*pb.Segment, 0, len(policy.SegmentList)),
+		Color:            policy.Color,
+		Preference:       policy.Preference,
+		PolicyName:       policy.Name,
+		SrcAddr:          policy.SrcAddr.AsSlice(),
+		DstAddr:          policy.DstAddr.AsSlice(),
+		PlspId:           policy.PlspID,
+		LspId:            uint32(policy.LSPID),
+		State:            toPBPolicyState(policy.State),
+		Type:             toPBPolicyType(policy.Type),
+		Metric:           toPBMetricType(policy.Metric),
+		ExcludeRouterIds: policy.Exclude,
 	}
 
 	srPolicy.SrcRouterId = routerIDIndex[policy.SrcAddr]
@@ -1142,4 +1205,65 @@ func (s *APIServer) DeleteSession(ctx context.Context, req *pb.DeleteSessionRequ
 	pce.closeSession(ss)
 
 	return &pb.DeleteSessionResponse{IsSuccess: true}, nil
+}
+
+// resolveExcludedNodeArg validates that exactly one of routerID/sid is set
+// and returns the router ID to use, resolving sid against ted the same way
+// a per-policy exclude_sids entry is resolved in getSegmentList.
+func resolveExcludedNodeArg(ted *table.LsTED, routerID, sid string) (string, error) {
+	hasRouterID := routerID != ""
+	hasSID := sid != ""
+	switch {
+	case hasRouterID && hasSID:
+		return "", errors.New("exactly one of router_id / sid must be set, not both")
+	case hasRouterID:
+		return routerID, nil
+	case hasSID:
+		if ted == nil {
+			return "", errors.New("ted is disabled, cannot resolve sid to a router ID")
+		}
+		return findRouterIDBySID(ted, sid)
+	default:
+		return "", errors.New("exactly one of router_id / sid must be set")
+	}
+}
+
+// AddExcludedNode adds a router to the global node-exclusion set, applied
+// to every dynamically-computed policy server-wide on top of each policy's
+// own SRPolicy.exclude - see globalExcludeStore and mergeGlobalExclude.
+func (s *APIServer) AddExcludedNode(ctx context.Context, req *pb.AddExcludedNodeRequest) (*pb.AddExcludedNodeResponse, error) {
+	if s.pce.globalExcludeStore == nil {
+		return nil, errors.New("global node exclusion is disabled (nodeExclusionPersistence)")
+	}
+	routerID, err := resolveExcludedNodeArg(s.pce.TED(), req.GetRouterId(), req.GetSid())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.pce.globalExcludeStore.add(routerID); err != nil {
+		return &pb.AddExcludedNodeResponse{IsSuccess: false}, fmt.Errorf("failed to persist global node exclusion: %w", err)
+	}
+	s.logger.Info("added router to global node-exclusion set", zap.String("routerID", routerID))
+	return &pb.AddExcludedNodeResponse{IsSuccess: true}, nil
+}
+
+// RemoveExcludedNode removes a router from the global node-exclusion set.
+func (s *APIServer) RemoveExcludedNode(ctx context.Context, req *pb.RemoveExcludedNodeRequest) (*pb.RemoveExcludedNodeResponse, error) {
+	if s.pce.globalExcludeStore == nil {
+		return nil, errors.New("global node exclusion is disabled (nodeExclusionPersistence)")
+	}
+	routerID, err := resolveExcludedNodeArg(s.pce.TED(), req.GetRouterId(), req.GetSid())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.pce.globalExcludeStore.remove(routerID); err != nil {
+		return &pb.RemoveExcludedNodeResponse{IsSuccess: false}, fmt.Errorf("failed to persist global node exclusion removal: %w", err)
+	}
+	s.logger.Info("removed router from global node-exclusion set", zap.String("routerID", routerID))
+	return &pb.RemoveExcludedNodeResponse{IsSuccess: true}, nil
+}
+
+// GetExcludedNodes returns the current global node-exclusion set (empty,
+// not an error, if the feature is disabled).
+func (s *APIServer) GetExcludedNodes(ctx context.Context, _ *pb.GetExcludedNodesRequest) (*pb.GetExcludedNodesResponse, error) {
+	return &pb.GetExcludedNodesResponse{RouterIds: s.pce.globalExcludeList()}, nil
 }

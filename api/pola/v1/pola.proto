@@ -16,6 +16,15 @@ service PCEService {
   rpc GetSRPolicyList (GetSRPolicyListRequest) returns (GetSRPolicyListResponse);
   rpc GetTED (GetTEDRequest) returns (GetTEDResponse);
   rpc DeleteSession (DeleteSessionRequest) returns (DeleteSessionResponse);
+
+  // AddExcludedNode/RemoveExcludedNode/GetExcludedNodes manage the global
+  // node-exclusion set: router IDs kept out of CSPF consideration for every
+  // dynamically-computed policy server-wide, independent of any single
+  // policy's own SRPolicy.exclude. See the SRPolicy.exclude_router_ids /
+  // exclude_sids comments for the equivalent per-policy mechanism.
+  rpc AddExcludedNode (AddExcludedNodeRequest) returns (AddExcludedNodeResponse);
+  rpc RemoveExcludedNode (RemoveExcludedNodeRequest) returns (RemoveExcludedNodeResponse);
+  rpc GetExcludedNodes (GetExcludedNodesRequest) returns (GetExcludedNodesResponse);
 }
 
 message Segment {
@@ -73,6 +82,18 @@ message SRPolicy {
   uint32 plsp_id = 13;
   uint32 lsp_id = 14;
   SRPolicyState state = 15;
+
+  // Router IDs to exclude entirely from CSPF consideration when computing
+  // this policy's path (e.g. a node planned for maintenance/migration).
+  // type: dynamic only - explicit policies already fully control their own
+  // segment list, so exclusion has no meaning for them.
+  repeated string exclude_router_ids = 16;
+
+  // SIDs identifying routers to exclude, resolved against the TED to a
+  // router ID at request time. An alternate way to specify exclude_router_ids
+  // entries when the operator knows a node's SID but not its router ID.
+  // type: dynamic only, same as exclude_router_ids.
+  repeated string exclude_sids = 17;
 }
 
 message CreateSRPolicyRequest {
@@ -103,6 +124,33 @@ message DeleteSRPolicyRequest {
 
 message DeleteSRPolicyResponse {
   bool is_success = 1;
+}
+
+message AddExcludedNodeRequest {
+  // Exactly one of router_id / sid must be set. sid is resolved against the
+  // TED to a router ID at request time.
+  string router_id = 1;
+  string sid = 2;
+}
+
+message AddExcludedNodeResponse {
+  bool is_success = 1;
+}
+
+message RemoveExcludedNodeRequest {
+  // Exactly one of router_id / sid must be set, same as AddExcludedNodeRequest.
+  string router_id = 1;
+  string sid = 2;
+}
+
+message RemoveExcludedNodeResponse {
+  bool is_success = 1;
+}
+
+message GetExcludedNodesRequest {}
+
+message GetExcludedNodesResponse {
+  repeated string router_ids = 1;
 }
 
 enum SessionState {

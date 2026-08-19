@@ -96,6 +96,18 @@ func main() {
 		}
 	}
 
+	// Same non-fatal-failure treatment as intent persistence above, for the
+	// global node-exclusion set's persistence directory.
+	nodeExclusionPersistenceEnabled := c.Global.NodeExclusionPersistence.Enabled()
+	nodeExclusionPersistencePath := c.Global.NodeExclusionPersistence.ResolvedPath()
+	if nodeExclusionPersistenceEnabled {
+		if err := os.MkdirAll(filepath.Dir(nodeExclusionPersistencePath), 0755); err != nil {
+			logger.Warn("failed to create node-exclusion persistence directory, disabling the feature for this run",
+				zap.String("path", nodeExclusionPersistencePath), zap.Error(err))
+			nodeExclusionPersistenceEnabled = false
+		}
+	}
+
 	// Prepare TED update tools
 	var tedElemsChan chan []table.TEDElem
 	if c.Global.TED.Enable {
@@ -124,17 +136,19 @@ func main() {
 
 	// Start PCE server
 	o := &server.PCEOptions{
-		PCEPAddr:                c.Global.PCEP.Address,
-		PCEPPort:                c.Global.PCEP.Port,
-		GRPCAddr:                c.Global.GRPCServer.Address,
-		GRPCPort:                c.Global.GRPCServer.Port,
-		TEDEnable:               c.Global.TED.Enable,
-		USidMode:                c.Global.USidMode,
-		ASN:                     c.Global.TED.ASN,
-		FRRPeers:                frrPeers,
-		NokiaPeers:              nokiaPeers,
-		IntentPersistenceEnable: intentPersistenceEnabled,
-		IntentPersistencePath:   intentPersistencePath,
+		PCEPAddr:                       c.Global.PCEP.Address,
+		PCEPPort:                       c.Global.PCEP.Port,
+		GRPCAddr:                       c.Global.GRPCServer.Address,
+		GRPCPort:                       c.Global.GRPCServer.Port,
+		TEDEnable:                      c.Global.TED.Enable,
+		USidMode:                       c.Global.USidMode,
+		ASN:                            c.Global.TED.ASN,
+		FRRPeers:                       frrPeers,
+		NokiaPeers:                     nokiaPeers,
+		IntentPersistenceEnable:        intentPersistenceEnabled,
+		IntentPersistencePath:          intentPersistencePath,
+		NodeExclusionPersistenceEnable: nodeExclusionPersistenceEnabled,
+		NodeExclusionPersistencePath:   nodeExclusionPersistencePath,
 	}
 	if serverErr := server.NewPCE(o, logger, tedElemsChan); serverErr.Error != nil {
 		logger.Panic("Failed to start new server", zap.String("server", serverErr.Server), zap.Error(serverErr.Error))

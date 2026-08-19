@@ -65,7 +65,7 @@ func TestCSPF_SkipsNonSRCapableNeighbor(t *testing.T) {
 
 	network := map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}
 
-	segmentList, err := spf("A", "D", table.IGPMetric, network)
+	segmentList, err := spf("A", "D", table.IGPMetric, network, nil)
 	if err != nil {
 		t.Fatalf("spf returned an error, want a valid path avoiding the non-SR node B: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestCSPF_NoAllSRPath_ReturnsCleanError(t *testing.T) {
 
 	network := map[string]*table.LsNode{"A": a, "B": b, "D": d}
 
-	_, err := spf("A", "D", table.IGPMetric, network)
+	_, err := spf("A", "D", table.IGPMetric, network, nil)
 	if err == nil {
 		t.Fatal("expected an error since no all-SR-MPLS path exists, got nil")
 	}
@@ -107,8 +107,128 @@ func TestCSPF_SourceWithoutNodeSID_IsHardError(t *testing.T) {
 
 	network := map[string]*table.LsNode{"A": a, "D": d}
 
-	_, err := spf("A", "D", table.IGPMetric, network)
+	_, err := spf("A", "D", table.IGPMetric, network, nil)
 	if err == nil {
 		t.Fatal("expected an error since the source node has no Node SID, got nil")
+	}
+}
+
+// TestCSPF_ExcludesSpecifiedNode mirrors TestCSPF_SkipsNonSRCapableNeighbor's
+// topology exactly, but B is SR-capable and excluded explicitly instead of
+// lacking a Node SID - confirming exclusion prunes a transit candidate the
+// same way non-SR-capability already does, rather than only ever ruling out
+// nodes CSPF would have rejected anyway.
+func TestCSPF_ExcludesSpecifiedNode(t *testing.T) {
+	a := srCapableNode("A", 0)
+	b := srCapableNode("B", 3) // SR-capable, but explicitly excluded below
+	c := srCapableNode("C", 1)
+	d := srCapableNode("D", 2)
+
+	link(a, b, 1) // cheapest first hop, but B is excluded
+	link(b, d, 1) // A->B->D costs 2 total - would be the SPF choice if B weren't excluded
+	link(a, c, 10)
+	link(c, d, 1) // A->C->D costs 11 total - the only path avoiding B
+
+	network := map[string]*table.LsNode{"A": a, "B": b, "C": c, "D": d}
+	ted := &table.LsTED{Nodes: network}
+
+	segmentList, err := CSPF("A", "D", table.IGPMetric, ted, []string{"B"})
+	if err != nil {
+		t.Fatalf("CSPF returned an error, want a valid path avoiding excluded node B: %v", err)
+	}
+	if len(segmentList) != 2 {
+		t.Fatalf("segment list: got %d segments, want 2 (C, D): %v", len(segmentList), segmentList)
+	}
+	bsSID, _ := b.NodeSegment() // srgbBegin(16000) + sidIndex(3) = "16003"
+	for _, seg := range segmentList {
+		if seg.SidString() == bsSID.SidString() {
+			t.Errorf("excluded node B's own SID (%s) must not appear in the computed path: %v", bsSID.SidString(), segmentList)
+		}
+	}
+}
+
+// TestCSPF_NoPathAfterExclusion_ReturnsCleanError mirrors
+// TestCSPF_NoAllSRPath_ReturnsCleanError: the only route from A to D transits
+// B, which is SR-capable but excluded, so no valid path remains. Must fail
+// with the same clean "no path found" error used for the non-SR-neighbor
+// case - excluding a node "over-prunes" the graph, but the resulting failure
+// mode is identical from the caller's point of view.
+func TestCSPF_NoPathAfterExclusion_ReturnsCleanError(t *testing.T) {
+	a := srCapableNode("A", 0)
+	b := srCapableNode("B", 3)
+	d := srCapableNode("D", 1)
+
+	link(a, b, 1)
+	link(b, d, 1) // the only route from A to D goes through B
+
+	network := map[string]*table.LsNode{"A": a, "B": b, "D": d}
+	ted := &table.LsTED{Nodes: network}
+
+	_, err := CSPF("A", "D", table.IGPMetric, ted, []string{"B"})
+	if err == nil {
+		t.Fatal("expected an error since excluding B leaves no path, got nil")
+	}
+	if err.Error() != "no SR-MPLS path found from A to D" {
+		t.Errorf("error message: got %q, want the same clean \"no SR-MPLS path found\" message as the non-SR-neighbor case", err.Error())
+	}
+}
+
+// TestCSPF_SourceExcluded_IsHardError confirms excluding a path's own source
+// is rejected up front with a clear, distinct error - not silently treated
+// as "no path found" (which would look identical to a genuine topology gap).
+func TestCSPF_SourceExcluded_IsHardError(t *testing.T) {
+	a := srCapableNode("A", 0)
+	d := srCapableNode("D", 1)
+	link(a, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "D": d}}
+
+	_, err := CSPF("A", "D", table.IGPMetric, ted, []string{"A"})
+	if err == nil {
+		t.Fatal("expected an error since the source itself is excluded, got nil")
+	}
+	if err.Error() != "cannot exclude router A: it is the path's own source" {
+		t.Errorf("error message: got %q, want a clear source-excluded error, not a generic no-path result", err.Error())
+	}
+}
+
+// TestCSPF_DestinationExcluded_IsHardError is the destination-side mirror of
+// TestCSPF_SourceExcluded_IsHardError.
+func TestCSPF_DestinationExcluded_IsHardError(t *testing.T) {
+	a := srCapableNode("A", 0)
+	d := srCapableNode("D", 1)
+	link(a, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "D": d}}
+
+	_, err := CSPF("A", "D", table.IGPMetric, ted, []string{"D"})
+	if err == nil {
+		t.Fatal("expected an error since the destination itself is excluded, got nil")
+	}
+	if err.Error() != "cannot exclude router D: it is the path's own destination" {
+		t.Errorf("error message: got %q, want a clear destination-excluded error, not a generic no-path result", err.Error())
+	}
+}
+
+// TestCSPFWithLooseSourceRouting_WaypointExcluded_IsHardError confirms an
+// explicit waypoint conflicting with the exclusion list is rejected with a
+// message distinct from the plain source/destination case, since the
+// operator needs to know it's the waypoint (not srcRouterID/dstRouterID)
+// causing the conflict.
+func TestCSPFWithLooseSourceRouting_WaypointExcluded_IsHardError(t *testing.T) {
+	a := srCapableNode("A", 0)
+	b := srCapableNode("B", 3)
+	d := srCapableNode("D", 1)
+	link(a, b, 1)
+	link(b, d, 1)
+
+	ted := &table.LsTED{Nodes: map[string]*table.LsNode{"A": a, "B": b, "D": d}}
+
+	_, err := CSPFWithLooseSourceRouting("A", "D", []table.Waypoint{{RouterID: "B"}}, table.IGPMetric, ted, []string{"B"})
+	if err == nil {
+		t.Fatal("expected an error since waypoint B is also excluded, got nil")
+	}
+	if err.Error() != "cannot exclude router B: it is an explicit waypoint of this path" {
+		t.Errorf("error message: got %q, want a clear waypoint-conflict error", err.Error())
 	}
 }

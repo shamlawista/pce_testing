@@ -24,12 +24,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PCEService_CreateSRPolicy_FullMethodName  = "/api.pola.v1.PCEService/CreateSRPolicy"
-	PCEService_DeleteSRPolicy_FullMethodName  = "/api.pola.v1.PCEService/DeleteSRPolicy"
-	PCEService_GetSessionList_FullMethodName  = "/api.pola.v1.PCEService/GetSessionList"
-	PCEService_GetSRPolicyList_FullMethodName = "/api.pola.v1.PCEService/GetSRPolicyList"
-	PCEService_GetTED_FullMethodName          = "/api.pola.v1.PCEService/GetTED"
-	PCEService_DeleteSession_FullMethodName   = "/api.pola.v1.PCEService/DeleteSession"
+	PCEService_CreateSRPolicy_FullMethodName     = "/api.pola.v1.PCEService/CreateSRPolicy"
+	PCEService_DeleteSRPolicy_FullMethodName     = "/api.pola.v1.PCEService/DeleteSRPolicy"
+	PCEService_GetSessionList_FullMethodName     = "/api.pola.v1.PCEService/GetSessionList"
+	PCEService_GetSRPolicyList_FullMethodName    = "/api.pola.v1.PCEService/GetSRPolicyList"
+	PCEService_GetTED_FullMethodName             = "/api.pola.v1.PCEService/GetTED"
+	PCEService_DeleteSession_FullMethodName      = "/api.pola.v1.PCEService/DeleteSession"
+	PCEService_AddExcludedNode_FullMethodName    = "/api.pola.v1.PCEService/AddExcludedNode"
+	PCEService_RemoveExcludedNode_FullMethodName = "/api.pola.v1.PCEService/RemoveExcludedNode"
+	PCEService_GetExcludedNodes_FullMethodName   = "/api.pola.v1.PCEService/GetExcludedNodes"
 )
 
 // PCEServiceClient is the client API for PCEService service.
@@ -42,6 +45,14 @@ type PCEServiceClient interface {
 	GetSRPolicyList(ctx context.Context, in *GetSRPolicyListRequest, opts ...grpc.CallOption) (*GetSRPolicyListResponse, error)
 	GetTED(ctx context.Context, in *GetTEDRequest, opts ...grpc.CallOption) (*GetTEDResponse, error)
 	DeleteSession(ctx context.Context, in *DeleteSessionRequest, opts ...grpc.CallOption) (*DeleteSessionResponse, error)
+	// AddExcludedNode/RemoveExcludedNode/GetExcludedNodes manage the global
+	// node-exclusion set: router IDs kept out of CSPF consideration for every
+	// dynamically-computed policy server-wide, independent of any single
+	// policy's own SRPolicy.exclude. See the SRPolicy.exclude_router_ids /
+	// exclude_sids comments for the equivalent per-policy mechanism.
+	AddExcludedNode(ctx context.Context, in *AddExcludedNodeRequest, opts ...grpc.CallOption) (*AddExcludedNodeResponse, error)
+	RemoveExcludedNode(ctx context.Context, in *RemoveExcludedNodeRequest, opts ...grpc.CallOption) (*RemoveExcludedNodeResponse, error)
+	GetExcludedNodes(ctx context.Context, in *GetExcludedNodesRequest, opts ...grpc.CallOption) (*GetExcludedNodesResponse, error)
 }
 
 type pCEServiceClient struct {
@@ -112,6 +123,36 @@ func (c *pCEServiceClient) DeleteSession(ctx context.Context, in *DeleteSessionR
 	return out, nil
 }
 
+func (c *pCEServiceClient) AddExcludedNode(ctx context.Context, in *AddExcludedNodeRequest, opts ...grpc.CallOption) (*AddExcludedNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddExcludedNodeResponse)
+	err := c.cc.Invoke(ctx, PCEService_AddExcludedNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pCEServiceClient) RemoveExcludedNode(ctx context.Context, in *RemoveExcludedNodeRequest, opts ...grpc.CallOption) (*RemoveExcludedNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveExcludedNodeResponse)
+	err := c.cc.Invoke(ctx, PCEService_RemoveExcludedNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pCEServiceClient) GetExcludedNodes(ctx context.Context, in *GetExcludedNodesRequest, opts ...grpc.CallOption) (*GetExcludedNodesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExcludedNodesResponse)
+	err := c.cc.Invoke(ctx, PCEService_GetExcludedNodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PCEServiceServer is the server API for PCEService service.
 // All implementations must embed UnimplementedPCEServiceServer
 // for forward compatibility.
@@ -122,6 +163,14 @@ type PCEServiceServer interface {
 	GetSRPolicyList(context.Context, *GetSRPolicyListRequest) (*GetSRPolicyListResponse, error)
 	GetTED(context.Context, *GetTEDRequest) (*GetTEDResponse, error)
 	DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error)
+	// AddExcludedNode/RemoveExcludedNode/GetExcludedNodes manage the global
+	// node-exclusion set: router IDs kept out of CSPF consideration for every
+	// dynamically-computed policy server-wide, independent of any single
+	// policy's own SRPolicy.exclude. See the SRPolicy.exclude_router_ids /
+	// exclude_sids comments for the equivalent per-policy mechanism.
+	AddExcludedNode(context.Context, *AddExcludedNodeRequest) (*AddExcludedNodeResponse, error)
+	RemoveExcludedNode(context.Context, *RemoveExcludedNodeRequest) (*RemoveExcludedNodeResponse, error)
+	GetExcludedNodes(context.Context, *GetExcludedNodesRequest) (*GetExcludedNodesResponse, error)
 	mustEmbedUnimplementedPCEServiceServer()
 }
 
@@ -149,6 +198,15 @@ func (UnimplementedPCEServiceServer) GetTED(context.Context, *GetTEDRequest) (*G
 }
 func (UnimplementedPCEServiceServer) DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSession not implemented")
+}
+func (UnimplementedPCEServiceServer) AddExcludedNode(context.Context, *AddExcludedNodeRequest) (*AddExcludedNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddExcludedNode not implemented")
+}
+func (UnimplementedPCEServiceServer) RemoveExcludedNode(context.Context, *RemoveExcludedNodeRequest) (*RemoveExcludedNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveExcludedNode not implemented")
+}
+func (UnimplementedPCEServiceServer) GetExcludedNodes(context.Context, *GetExcludedNodesRequest) (*GetExcludedNodesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetExcludedNodes not implemented")
 }
 func (UnimplementedPCEServiceServer) mustEmbedUnimplementedPCEServiceServer() {}
 func (UnimplementedPCEServiceServer) testEmbeddedByValue()                    {}
@@ -279,6 +337,60 @@ func _PCEService_DeleteSession_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PCEService_AddExcludedNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddExcludedNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PCEServiceServer).AddExcludedNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PCEService_AddExcludedNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PCEServiceServer).AddExcludedNode(ctx, req.(*AddExcludedNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PCEService_RemoveExcludedNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveExcludedNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PCEServiceServer).RemoveExcludedNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PCEService_RemoveExcludedNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PCEServiceServer).RemoveExcludedNode(ctx, req.(*RemoveExcludedNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PCEService_GetExcludedNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExcludedNodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PCEServiceServer).GetExcludedNodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PCEService_GetExcludedNodes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PCEServiceServer).GetExcludedNodes(ctx, req.(*GetExcludedNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PCEService_ServiceDesc is the grpc.ServiceDesc for PCEService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -309,6 +421,18 @@ var PCEService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSession",
 			Handler:    _PCEService_DeleteSession_Handler,
+		},
+		{
+			MethodName: "AddExcludedNode",
+			Handler:    _PCEService_AddExcludedNode_Handler,
+		},
+		{
+			MethodName: "RemoveExcludedNode",
+			Handler:    _PCEService_RemoveExcludedNode_Handler,
+		},
+		{
+			MethodName: "GetExcludedNodes",
+			Handler:    _PCEService_GetExcludedNodes_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

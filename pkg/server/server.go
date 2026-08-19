@@ -22,16 +22,26 @@ import (
 )
 
 type Server struct {
-	sessionMu    sync.RWMutex // guards sessionList; written from the PCEP accept/close goroutines, read from gRPC handler goroutines.
-	sessionList  []*Session
-	tedMu        sync.RWMutex // guards ted; written from the TED-update goroutine, read from gRPC handler goroutines.
-	ted          *table.LsTED
-	logger       *zap.Logger
-	asn          uint32
-	frrPeers     map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
-	nokiaPeers   map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
-	reoptimizeMu sync.Mutex              // non-overlap guard for the async TED-triggered reoptimization sweep; TryLock'd only from the NewPCE TED-update goroutine.
-	intentStore  *intentStore            // nil = persistence disabled; see PCEOptions.IntentPersistenceEnable.
+	sessionMu          sync.RWMutex // guards sessionList; written from the PCEP accept/close goroutines, read from gRPC handler goroutines.
+	sessionList        []*Session
+	tedMu              sync.RWMutex // guards ted; written from the TED-update goroutine, read from gRPC handler goroutines.
+	ted                *table.LsTED
+	logger             *zap.Logger
+	asn                uint32
+	frrPeers           map[netip.Addr]struct{} // peers explicitly configured as FRRouting; see PCEOptions.FRRPeers.
+	nokiaPeers         map[netip.Addr]struct{} // peers explicitly configured as Nokia SR OS; see PCEOptions.NokiaPeers.
+	reoptimizeMu       sync.Mutex              // non-overlap guard for the async TED-triggered reoptimization sweep; TryLock'd only from the NewPCE TED-update goroutine.
+	intentStore        *intentStore            // nil = persistence disabled; see PCEOptions.IntentPersistenceEnable.
+	globalExcludeStore *globalExcludeStore     // nil = feature disabled; see PCEOptions.NodeExclusionPersistenceEnable.
+}
+
+// globalExcludeList returns the current global node-exclusion set, or nil
+// if the feature is disabled. Safe for concurrent use.
+func (s *Server) globalExcludeList() []string {
+	if s.globalExcludeStore == nil {
+		return nil
+	}
+	return s.globalExcludeStore.list()
 }
 
 // TED returns the current TED snapshot. Safe for concurrent use with setTED.
@@ -108,6 +118,12 @@ type PCEOptions struct {
 	// restart. See intentStore.
 	IntentPersistenceEnable bool
 	IntentPersistencePath   string
+	// NodeExclusionPersistenceEnable/NodeExclusionPersistencePath configure
+	// the global node-exclusion set (avoid a router in every dynamically-
+	// computed policy server-wide) and its durable storage. See
+	// globalExcludeStore.
+	NodeExclusionPersistenceEnable bool
+	NodeExclusionPersistencePath   string
 }
 
 func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem) Error {
@@ -134,6 +150,15 @@ func NewPCE(o *PCEOptions, logger *zap.Logger, tedElemsChan chan []table.TEDElem
 			store = newIntentStore(o.IntentPersistencePath)
 		}
 		s.intentStore = store
+	}
+	if o.NodeExclusionPersistenceEnable {
+		store, err := loadGlobalExcludeStore(o.NodeExclusionPersistencePath)
+		if err != nil {
+			logger.Warn("failed to load persisted global node-exclusion store, starting empty",
+				zap.String("path", o.NodeExclusionPersistencePath), zap.Error(err))
+			store = newGlobalExcludeStore(o.NodeExclusionPersistencePath)
+		}
+		s.globalExcludeStore = store
 	}
 	if o.TEDEnable {
 		s.setTED(&table.LsTED{
@@ -227,6 +252,7 @@ func (s *Server) Serve(address string, port string, usidMode bool) error {
 		}
 		ss := NewSession(sessionID, peerAddrPort.Addr(), tcpConn, s.logger, s.TED(), s.asn)
 		ss.intentStore = s.intentStore
+		ss.globalExcludeStore = s.globalExcludeStore
 		if _, ok := s.frrPeers[peerAddrPort.Addr()]; ok {
 			ss.forceFRR = true
 		}

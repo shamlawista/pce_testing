@@ -60,6 +60,32 @@
                         "required": ["routerID"],
                         "additionalProperties": false
                     }
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "routerID": {
+                                "type": "string"
+                            },
+                            "sid": {
+                                "type": "string",
+                                "$comment": "resolved against the TED to a router ID at request time"
+                            }
+                        },
+                        "oneOf": [
+                            {
+                                "required": ["routerID"],
+                                "not": { "required": ["sid"] }
+                            },
+                            {
+                                "required": ["sid"],
+                                "not": { "required": ["routerID"] }
+                            }
+                        ],
+                        "additionalProperties": false
+                    }
                 }
             },
             "additionalProperties": false,
@@ -79,7 +105,9 @@
                                 "properties": { "type": { "const": "explicit" } }
                             },
                             "then": {
-                                "required": ["segmentList"]
+                                "required": ["segmentList"],
+                                "not": { "required": ["exclude"] },
+                                "$comment": "exclude is only meaningful for a dynamic (CSPF-computed) path; an explicit segmentList already fully controls it"
                             }
                         },
                         {
@@ -103,7 +131,8 @@
                             { "required": ["srcRouterID"] },
                             { "required": ["dstRouterID"] },
                             { "required": ["metric"] },
-                            { "required": ["waypoints"] }
+                            { "required": ["waypoints"] },
+                            { "required": ["exclude"] }
                         ]
                     }
                 }

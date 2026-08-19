@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/nttcom/pola/pkg/table"
@@ -19,13 +20,14 @@ import (
 const intentStoreVersion = 1
 
 // persistedIntent is the on-disk representation of an SR policy's intent
-// (Type/Metric). Stored as plain strings rather than table.PolicyType/
-// table.MetricType directly: MetricType has a MarshalJSON (via
-// DisplayString(), e.g. "te") but no UnmarshalJSON, so round-tripping it
-// through encoding/json directly would silently fail to decode.
+// (Type/Metric/Exclude). Type/Metric are stored as plain strings rather than
+// table.PolicyType/table.MetricType directly: MetricType has a MarshalJSON
+// (via DisplayString(), e.g. "te") but no UnmarshalJSON, so round-tripping
+// it through encoding/json directly would silently fail to decode.
 type persistedIntent struct {
-	Type   string `json:"type"`
-	Metric string `json:"metric"`
+	Type    string   `json:"type"`
+	Metric  string   `json:"metric"`
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // intentStoreFile is the on-disk envelope. Versioned since this is the
@@ -87,13 +89,13 @@ func loadIntentStore(path string) (*intentStore, error) {
 // never actually change and a full-file rewrite would otherwise happen far
 // more often than the "infrequent mutation" assumption this design relies
 // on to avoid needing a real embedded KV store.
-func (s *intentStore) save(peerAddr netip.Addr, name string, polType table.PolicyType, metric table.MetricType) error {
+func (s *intentStore) save(peerAddr netip.Addr, name string, polType table.PolicyType, metric table.MetricType, exclude []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	next := persistedIntent{Type: string(polType), Metric: metricTypeToString(metric)}
+	next := persistedIntent{Type: string(polType), Metric: metricTypeToString(metric), Exclude: exclude}
 	peer := peerAddr.String()
-	if existing, ok := s.data[peer][name]; ok && existing == next {
+	if existing, ok := s.data[peer][name]; ok && existing.equal(next) {
 		return nil
 	}
 
@@ -104,16 +106,23 @@ func (s *intentStore) save(peerAddr netip.Addr, name string, polType table.Polic
 	return s.writeLocked()
 }
 
+// equal reports whether two persistedIntent values hold the same data -
+// []string makes persistedIntent non-comparable with ==, unlike before
+// Exclude existed.
+func (i persistedIntent) equal(other persistedIntent) bool {
+	return i.Type == other.Type && i.Metric == other.Metric && slices.Equal(i.Exclude, other.Exclude)
+}
+
 // lookup returns the persisted intent for (peerAddr, name), if any.
-func (s *intentStore) lookup(peerAddr netip.Addr, name string) (table.PolicyType, table.MetricType, bool) {
+func (s *intentStore) lookup(peerAddr netip.Addr, name string) (table.PolicyType, table.MetricType, []string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	intent, ok := s.data[peerAddr.String()][name]
 	if !ok {
-		return "", table.UnspecifiedMetric, false
+		return "", table.UnspecifiedMetric, nil, false
 	}
-	return table.PolicyType(intent.Type), metricTypeFromString(intent.Metric), true
+	return table.PolicyType(intent.Type), metricTypeFromString(intent.Metric), intent.Exclude, true
 }
 
 // delete removes the persisted intent for (peerAddr, name), if present.

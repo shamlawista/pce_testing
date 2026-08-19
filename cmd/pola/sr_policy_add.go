@@ -83,6 +83,16 @@ type Waypoint struct {
 	SID      string `yaml:"sid"` // optional: fixed SID override
 }
 
+// Exclude is a router to keep out of CSPF consideration entirely for a
+// type: dynamic policy - e.g. a node planned for maintenance/migration.
+// Exactly one of RouterID or SID must be set; SID is resolved against the
+// TED to a router ID at request time, for when the operator knows a node's
+// SID but not its router ID.
+type Exclude struct {
+	RouterID string `yaml:"routerID"`
+	SID      string `yaml:"sid"`
+}
+
 type SRPolicy struct {
 	PCEPSessionAddr netip.Addr `yaml:"pcepSessionAddr"`
 	SrcAddr         netip.Addr `yaml:"srcAddr"`
@@ -95,6 +105,7 @@ type SRPolicy struct {
 	Type            string     `yaml:"type"`
 	Metric          string     `yaml:"metric"`
 	Waypoints       []Waypoint `yaml:"waypoints"`
+	Exclude         []Exclude  `yaml:"exclude"`
 }
 
 type InputFormat struct {
@@ -148,8 +159,8 @@ func addSRPolicyWithEndpointAddr(input InputFormat, noSIDValidate bool) error {
 	if input.SRPolicy.Type != "" && input.SRPolicy.Type != "explicit" {
 		return fmt.Errorf("the srcAddr / dstAddr form supports `type: explicit` only, got %q", input.SRPolicy.Type)
 	}
-	if input.SRPolicy.Metric != "" || len(input.SRPolicy.Waypoints) > 0 {
-		return errors.New("`metric` and `waypoints` require a dynamic path, which the srcAddr / dstAddr form does not support")
+	if input.SRPolicy.Metric != "" || len(input.SRPolicy.Waypoints) > 0 || len(input.SRPolicy.Exclude) > 0 {
+		return errors.New("`metric`, `waypoints`, and `exclude` require a dynamic path, which the srcAddr / dstAddr form does not support")
 	}
 
 	if !input.SRPolicy.PCEPSessionAddr.IsValid() || input.SRPolicy.Color == 0 || !input.SRPolicy.SrcAddr.IsValid() || !input.SRPolicy.DstAddr.IsValid() || len(input.SRPolicy.SegmentList) == 0 {
@@ -210,22 +221,24 @@ func addSRPolicyWithRouterID(input InputFormat, noSIDValidate bool) error {
 		return err
 	}
 
-	srPolicyType, metric, segmentList, waypoints, err :=
+	srPolicyType, metric, segmentList, waypoints, excludeRouterIDs, excludeSIDs, err :=
 		buildPolicyByType(input, sampleInputDynamic, sampleInputExplicit)
 	if err != nil {
 		return err
 	}
 
 	srPolicy := &pb.SRPolicy{
-		PcepSessionAddr: input.SRPolicy.PCEPSessionAddr.AsSlice(),
-		SrcRouterId:     input.SRPolicy.SrcRouterID,
-		DstRouterId:     input.SRPolicy.DstRouterID,
-		Color:           input.SRPolicy.Color,
-		PolicyName:      input.SRPolicy.Name,
-		Type:            srPolicyType,
-		SegmentList:     segmentList,
-		Metric:          metric,
-		Waypoints:       waypoints,
+		PcepSessionAddr:  input.SRPolicy.PCEPSessionAddr.AsSlice(),
+		SrcRouterId:      input.SRPolicy.SrcRouterID,
+		DstRouterId:      input.SRPolicy.DstRouterID,
+		Color:            input.SRPolicy.Color,
+		PolicyName:       input.SRPolicy.Name,
+		Type:             srPolicyType,
+		SegmentList:      segmentList,
+		Metric:           metric,
+		Waypoints:        waypoints,
+		ExcludeRouterIds: excludeRouterIDs,
+		ExcludeSids:      excludeSIDs,
 	}
 
 	req := &pb.CreateSRPolicyRequest{
@@ -292,6 +305,8 @@ func buildPolicyByType(
 	pb.MetricType,
 	[]*pb.Segment,
 	[]*pb.Waypoint,
+	[]string, // exclude router IDs
+	[]string, // exclude SIDs
 	error,
 ) {
 	switch input.SRPolicy.Type {
@@ -300,7 +315,7 @@ func buildPolicyByType(
 	case "dynamic":
 		return buildDynamicPolicy(input, sampleDynamic)
 	default:
-		return 0, 0, nil, nil, fmt.Errorf("invalid input `type`")
+		return 0, 0, nil, nil, nil, nil, fmt.Errorf("invalid input `type`")
 	}
 }
 
@@ -312,13 +327,20 @@ func buildExplicitPolicy(
 	pb.MetricType,
 	[]*pb.Segment,
 	[]*pb.Waypoint,
+	[]string,
+	[]string,
 	error,
 ) {
 	if len(input.SRPolicy.SegmentList) == 0 {
-		return 0, 0, nil, nil, errors.New(
+		return 0, 0, nil, nil, nil, nil, errors.New(
 			"invalid input\n" +
 				"input example is below\n\n" +
 				sampleExplicit,
+		)
+	}
+	if len(input.SRPolicy.Exclude) > 0 {
+		return 0, 0, nil, nil, nil, nil, errors.New(
+			"`exclude` is only meaningful for `type: dynamic` - an explicit segment list already fully controls the path",
 		)
 	}
 
@@ -335,7 +357,7 @@ func buildExplicitPolicy(
 		})
 	}
 
-	return pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT, 0, segments, nil, nil
+	return pb.SRPolicyType_SR_POLICY_TYPE_EXPLICIT, 0, segments, nil, nil, nil, nil
 }
 
 func buildDynamicPolicy(
@@ -346,10 +368,12 @@ func buildDynamicPolicy(
 	pb.MetricType,
 	[]*pb.Segment,
 	[]*pb.Waypoint,
+	[]string,
+	[]string,
 	error,
 ) {
 	if input.SRPolicy.Metric == "" {
-		return 0, 0, nil, nil, errors.New(
+		return 0, 0, nil, nil, nil, nil, errors.New(
 			"invalid input\n" +
 				"input example is below\n\n" +
 				sampleDynamic,
@@ -358,7 +382,7 @@ func buildDynamicPolicy(
 
 	metric, err := parseMetric(input.SRPolicy.Metric)
 	if err != nil {
-		return 0, 0, nil, nil, err
+		return 0, 0, nil, nil, nil, nil, err
 	}
 
 	var waypoints []*pb.Waypoint
@@ -369,7 +393,25 @@ func buildDynamicPolicy(
 		})
 	}
 
-	return pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC, metric, nil, waypoints, nil
+	var excludeRouterIDs, excludeSIDs []string
+	for _, ex := range input.SRPolicy.Exclude {
+		hasRouterID := ex.RouterID != ""
+		hasSID := ex.SID != ""
+		switch {
+		case hasRouterID && hasSID:
+			return 0, 0, nil, nil, nil, nil, fmt.Errorf(
+				"exclude entry has both routerID (%q) and sid (%q) set - specify exactly one", ex.RouterID, ex.SID)
+		case hasRouterID:
+			excludeRouterIDs = append(excludeRouterIDs, ex.RouterID)
+		case hasSID:
+			excludeSIDs = append(excludeSIDs, ex.SID)
+		default:
+			return 0, 0, nil, nil, nil, nil, errors.New(
+				"exclude entry has neither routerID nor sid set - specify exactly one")
+		}
+	}
+
+	return pb.SRPolicyType_SR_POLICY_TYPE_DYNAMIC, metric, nil, waypoints, excludeRouterIDs, excludeSIDs, nil
 }
 
 func parseMetric(metric string) (pb.MetricType, error) {
