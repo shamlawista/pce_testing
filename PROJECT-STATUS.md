@@ -5,7 +5,7 @@
 > for the real docs. This file just exists so picking this project back up
 > after a while doesn't mean re-deriving all of this from git log.
 >
-> Last updated: 2026-08-20, branch `version_1.0` @ `8a18c82`.
+> Last updated: 2026-08-20, branch `version_1.0` @ `77549e0`.
 
 ## TL;DR
 
@@ -110,6 +110,151 @@ order:
    `add-topology-viewer`, §10/§14 of the architecture doc) — not merged
    into `version_1.0` yet, still has room for more work before that
    decision.
+
+## Full procedures (from zero)
+
+Assumes the lab machine layout used throughout this session: repo at
+`~/pce_testing`, `polad` config at `~/pola-run/polad.yaml`, binaries built
+to `~/go/bin/` (already on `PATH`). Adjust paths that differ on your setup.
+
+### 1) Provision all nodes using SR-mesh (follows IGP)
+
+`tools/sr-mesh/sr_mesh_provision.py`'s own defaults already match this lab
+(`--host 127.0.0.1 --port 50052 --asn 65018 --metric igp`), so the plain
+invocation is enough — it discovers every synced PCEP session and every
+SR-capable TED node itself and provisions the missing full mesh:
+
+```bash
+cd ~/pce_testing
+python3 tools/sr-mesh/sr_mesh_provision.py --port 50052 -v
+```
+
+Safe to re-run any time (idempotent — matches by policy name, skips what
+already exists; this is exactly what `tools/manual-tests/test-full.sh`'s
+Test 12 checks). Full flag list if you need something other than the
+defaults: `--host`, `--port`, `--asn`, `--color` (default `100`), `--metric`
+(`igp`/`te`/`delay`), `--name-prefix` (default `mesh`), `--pola-bin` (if
+`pola` isn't on `PATH`), `-v`/`--verbose`.
+
+### 2) Run the full test suite
+
+```bash
+cd ~/pce_testing
+git pull origin version_1.0        # make sure you have the latest scripts
+tools/manual-tests/test-full.sh
+```
+
+(The canonical copy now lives in the repo — if you still have an older
+ad-hoc copy at `~/pola-run/test-full.sh` from earlier this session, retire
+it in favor of this one.) See
+[tools/manual-tests/README.md](tools/manual-tests/README.md) for what it
+covers and its three pause points (two topology-change prompts, one
+session-delete confirmation).
+
+### 3) Provision a single LSP on a specific router pair
+
+```bash
+cat > /tmp/single-lsp.yaml <<'EOF'
+asn: 65018
+srPolicy:
+  pcepSessionAddr: 213.119.192.12      # the PCEP session to send this over
+  name: my-single-policy
+  srcRouterID: 2131.1919.2012          # source router ID
+  dstRouterID: 2131.1919.2021          # destination router ID
+  color: 100
+  type: dynamic
+  metric: igp
+EOF
+pola --port 50052 sr-policy add -f /tmp/single-lsp.yaml
+pola --port 50052 sr-policy list -j | jq '.[] | .srPolicies[] | select(.policyName=="my-single-policy")'
+```
+
+Swap `srcRouterID`/`dstRouterID` for whichever pair you actually want.
+For an **explicit** path (a caller-specified SID list instead of a
+CSPF-computed one) or excluding a node (`exclude:`), see architecture doc
+§5 and `cmd/pola/README.md` for the full YAML shapes.
+
+### 4) Pull an update, kill + restart `polad`
+
+```bash
+cd ~/pce_testing
+git pull origin version_1.0
+go build -o ~/go/bin/polad ./cmd/polad
+go build -o ~/go/bin/pola ./cmd/pola
+
+# stop the currently running polad
+pgrep -a polad                        # confirm it's there, note the PID
+kill $(pgrep -x polad)
+while pgrep -x polad >/dev/null; do sleep 1; done   # wait for it to actually exit
+
+# --- OPTIONAL: edit config first, only if something needs changing, e.g. ---
+#   - onboarding a new PCC that needs forceFRR/forceNokia (frrPeers/nokiaPeers)
+#   - toggling intentPersistence / nodeExclusionPersistence
+#   - log.debug: true for more verbose troubleshooting
+nano ~/pola-run/polad.yaml
+
+# start it again (skip straight here if the config didn't need editing)
+nohup ~/go/bin/polad -f ~/pola-run/polad.yaml > ~/pola-run/polad.log 2>&1 &
+disown
+
+# confirm it's back up and sessions have resynced
+tail -20 ~/pola-run/polad.log
+pola --port 50052 session
+```
+
+### 5) Establish the BGP(-LS) session (GoBGP)
+
+`polad` doesn't speak BGP itself — a separate `gobgpd` process does, and
+`polad` pulls BGP-LS topology from GoBGP's own gRPC API (architecture doc
+§4). This repo's own examples start it the same simple way:
+
+```bash
+pgrep -a gobgpd   # check whether it's already running
+```
+
+**If it's already running and your topology hasn't changed**, there's
+nothing to do — skip straight to confirming it's working (last step
+below).
+
+**If you need to add/change a neighbor** (e.g. a newly-onboarded PCC's
+loopback, matching future-work item 1), edit its config first — the shape
+used throughout this repo's own containerlab examples
+(`examples/containerlab/*/gobgpd/gobgpd.yaml`):
+
+```yaml
+global:
+  config:
+    as: 65018
+    router-id: "10.255.0.255"
+neighbors:
+  - config:
+      peer-as: 65018
+      neighbor-address: "<router-loopback-or-bgp-transport-address>"
+    afi-safis:
+      - config:
+          afi-safi-name: ls
+```
+
+(Repeat the `neighbors` entry per additional router.) Adjust the path
+below to wherever your actual `gobgpd.yaml` lives — this session never
+touched GoBGP directly (BGP-LS/TED was already flowing when it started),
+so double-check this against your real setup rather than trusting the
+path verbatim:
+
+```bash
+nano ~/pola-run/gobgpd.yaml     # only if you need to change something
+nohup gobgpd -f ~/pola-run/gobgpd.yaml > ~/pola-run/gobgpd.log 2>&1 &
+disown
+```
+
+**Confirm it's working**: there's no `gobgp` CLI usage anywhere in this
+repo/session (no `gobgp neighbor`, no `gobgp global rib`) — the only way
+this project checks BGP-LS health is indirectly, through `polad`'s own TED:
+
+```bash
+tail -20 ~/pola-run/gobgpd.log
+pola --port 50052 ted -j | jq '.ted | length'   # nonzero once BGP-LS is flowing in
+```
 
 ## Quick command reference
 
