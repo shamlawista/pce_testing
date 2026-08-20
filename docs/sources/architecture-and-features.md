@@ -4,7 +4,82 @@
 > skill (`.claude/skills/update-pola-docs/SKILL.md`) — run it after making
 > changes that affect behavior described here.
 >
-> Last synced: branch `version_1.0` @ `cd70311` (2026-08-19)
+> Last synced: branch `version_1.0` @ `cd70311` (2026-08-20)
+
+## Core concepts (start here if PCEP/SR-TE is new to you)
+
+If you already know what a PCE, PCEP, SR-TE, and BGP-LS are, skip to §1.
+Otherwise, here's the problem this whole project exists to solve, from
+first principles.
+
+**The problem.** A plain IP/MPLS network forwards every packet along
+whatever the IGP (ISIS/OSPF) thinks is the shortest path. That's fine until
+you need something the IGP can't express: "route this traffic the long way
+around because the short way is congested," "keep this traffic off that
+router because it's about to be decommissioned," "guarantee this traffic
+takes a specific, low-latency path end-to-end." Traffic Engineering (TE) is
+the general name for steering traffic along a path *other* than the plain
+IGP shortest path, on purpose.
+
+**Segment Routing (SR)** is the mechanism used here to actually steer that
+traffic. Instead of the network holding per-flow state hop-by-hop (like
+classic RSVP-TE), the *source* router encodes the entire desired path as an
+ordered stack of instructions — "Segment IDs" (SIDs) — pushed onto the
+packet. Each SID typically means "get to this specific router" (a Node-SID)
+or "cross this specific link" (an Adjacency-SID). Every router along the
+way just pops its own SID and forwards toward the next one; no other router
+needs to know the whole path. SR comes in two data-plane flavors this
+project supports: **SR-MPLS** (SIDs are ordinary MPLS labels) and **SRv6**
+(SIDs are IPv6 addresses, optionally byte-compressed as "uSIDs" so several
+fit in one address).
+
+An **SR Policy** is the object that says "traffic for this destination
+(identified by a color + endpoint) should follow this specific SID stack."
+RFC 9256 defines how a policy's actual path (its "candidate path") gets
+sourced two ways:
+- **Explicit**: someone (a human, a script, a controller) just hands over
+  the exact SID list. No computation involved.
+- **Dynamic**: the *ordering system* computes the SID list itself, given a
+  source, destination, and an optimization objective (a metric to minimize,
+  optionally nodes to avoid or waypoints to pass through). This is where
+  CSPF (Constrained Shortest Path First — Dijkstra's algorithm, plus
+  constraints) comes in.
+
+**Where does a dynamic computation get its map of the network from?** It
+needs live topology: which routers exist, how they're connected, what each
+link costs, and what each router's SID actually is. That's exactly what
+**BGP-LS** (RFC 9552) carries — IGP topology information (from ISIS or
+OSPF) re-exported as BGP updates, so something outside the IGP itself (like
+this project) can consume it without having to speak ISIS/OSPF directly.
+Pola doesn't implement BGP-LS parsing itself — it delegates that to
+**GoBGP** (a separate, general-purpose BGP daemon) and just consumes GoBGP's
+own gRPC API to pull the resulting topology in. Internally, Pola calls this
+in-memory topology snapshot the **TED** (Traffic Engineering Database).
+
+**Where does the actual "compute a path, then push it to a router" part
+happen?** That's what a **PCE** (Path Computation Element) is — a
+standalone entity that computes paths on behalf of routers (PCCs, "Path
+Computation Clients"), speaking **PCEP** (RFC 5440, Path Computation
+Element Protocol) over TCP. Historically, PCEP was mostly a *request/reply*
+protocol: a router asks "give me a path," the PCE replies once. This
+project implements the newer, more powerful mode: a **stateful, active**
+PCE (RFC 8231, RFC 8281) that can also *initiate* LSPs unprompted, keep
+track of what it initiated, and update or delete them later — i.e. behave
+like a real SR-TE controller, not just a path-computation oracle.
+
+**Putting it together**, Pola PCE (`polad`) is:
+1. A PCEP speaker that maintains stateful sessions to routers and can push
+   SR Policies to them (PCInitiate/PCUpdate/PCRpt messages).
+2. Optionally, a BGP-LS consumer (via GoBGP) that maintains a live TED, so
+   it can compute *dynamic* SR Policy paths itself instead of only
+   provisioning *explicit* ones handed to it.
+3. A gRPC server (with `pola`, a CLI, as the reference client) so a human
+   or an automation system can ask it to create/list/delete SR Policies,
+   inspect sessions, dump the TED, and manage node exclusions — all without
+   speaking PCEP or BGP-LS themselves.
+
+The rest of this document assumes the above and goes deep on how each part
+actually works.
 
 ## 1. What is Pola PCE
 
@@ -54,6 +129,41 @@ planes).
                                        │ BGP-LS
                                   IGP/BGP-LS-speaking routers
 ```
+
+**Walking a request through it**, end to end, for a `pola sr-policy add`
+with `type: dynamic`:
+
+1. `pola` reads the YAML file, resolves it into a `CreateSRPolicy` gRPC
+   request, and sends it to `polad`'s gRPC server.
+2. The gRPC handler (`pkg/server.APIServer`, in `grpc_server.go`) validates
+   the request, then — because it's `dynamic` — asks `pkg/cspf` to compute
+   a segment list against whatever `pkg/table.LsTED` currently holds in
+   memory (no network I/O here; the TED is just a Go map, kept current by
+   the BGP-LS listener goroutine described below).
+3. With a segment list in hand, the handler looks up (or opens) the
+   PCEP `Session` for the target router and asks it to send a PCInitiate
+   message (RFC 8281) — the actual TLV-encoded PCEP bytes go out over the
+   TCP connection `Session` has held open to that router since it first
+   established.
+4. The router (a PCC) programs the SR Policy locally and reports back what
+   it actually installed via a PCRpt message. `polad` correlates that
+   PCRpt to the original request (by SRP-ID) and updates its own in-memory
+   view of that policy's state — which is what `pola sr-policy list` reads
+   back.
+5. Separately and continuously, `internal/gobgp` is watching GoBGP's own
+   gRPC `WatchEvent` stream for BGP-LS changes. Any real topology change
+   rebuilds the whole TED and can trigger the native reoptimization sweep
+   (§6) — completely independent of any specific `sr-policy add` call, and
+   the reason dynamic policies stay correct without an operator
+   re-provisioning them by hand.
+
+Two protocols are doing two very different jobs here, and it's worth being
+explicit about which is which: **PCEP is the control-plane protocol to
+routers** — stateful, session-oriented, RFC-defined wire format, the thing
+that actually gets an SR Policy installed. **gRPC is the management-plane
+API to operators/automation** — request/response, protobuf-defined, the
+thing that lets you *ask* for an SR Policy to exist without knowing PCEP
+exists at all. `polad` is the translator sitting between them.
 
 ### Package map
 
@@ -342,7 +452,7 @@ Key flags: `--host`, `--port`, `--asn`, `--color`, `--metric`
 A Flask + Cytoscape.js web app for visualizing the live TED (nodes, links,
 Node-SIDs) with click-to-inspect SR policies and click-to-highlight LSP
 paths. **Lives on branch `add-topology-viewer`, not merged into
-`version_1.0`** (§13) — not present in this branch's working tree.
+`version_1.0`** (§14) — not present in this branch's working tree.
 
 ## 11. Deployment
 
@@ -365,7 +475,49 @@ targets: `setup`, `build`, `fmt`/`fix`, `lint`, `test`, `test-race`, `proto`,
 `check-proto`, `image`/`image-debug`, `ci`, `test-scenario`(`-parallel`)
 (containerlab + pytest scenario tests), `clean`.
 
-## 13. Feature branches in development (not yet merged into `version_1.0`)
+## 13. Testing
+
+Two distinct tiers, for two distinct purposes:
+
+### Automated (CI-grade)
+
+- **Unit tests**: plain `go test ./...` (or `make test`/`make test-race`).
+  Every package under `pkg/`, `internal/`, and `cmd/` has table-driven Go
+  tests exercising it directly — no live router or GoBGP needed. This is
+  what CI runs on every push.
+- **Scenario tests** (`test/scenario/`, `make test-scenario`): spins up real
+  Containerlab topologies (see `test/scenario/*/topo.clab.yaml`) and drives
+  them with `polad`/GoBGP/`pola` for real, via pytest (`test/helpers`). Runs
+  in a Linux container/VM with Containerlab installed; not something you
+  run from a plain dev machine without that setup. `PYTEST_ARGS='...'` lets
+  you scope a run; see `test/README.md`.
+
+### Manual (real-lab, ad-hoc)
+
+`tools/manual-tests/` (see its own
+[README](../../tools/manual-tests/README.md)) holds two bash scripts built
+and iterated on against a real lab, driving `polad` purely through the
+`pola` CLI/gRPC API the way an operator would — no Go test harness, no
+Containerlab, just a live `polad` you point them at:
+
+- **`test-node-exclusion.sh`** — quick, focused pass over just the CSPF
+  node-exclusion feature (per-policy `exclude` by router ID/SID, the global
+  node-exclusion set, both at creation time and via live reoptimization).
+- **`test-full.sh`** — comprehensive pass: session/TED reads, explicit paths
+  (all three input forms), dynamic paths (all metrics, waypoints), both
+  node-exclusion mechanisms, live reoptimization, intent persistence across
+  an automated `polad` restart, session delete/reconnect, and `tools/sr-mesh`
+  idempotency. Pauses for two manual topology-change triggers and one
+  destructive-action confirmation; everything else (including restarting
+  `polad` itself) is automatic. Use this one for a full regression pass —
+  e.g. before/after a long gap away from the project.
+
+Both print a `PASS`/`WARN`/`FAIL` summary and clean up their own test
+policies afterward. Review the config block at the top of each before
+running — they carry real router IDs/SIDs from the lab they were built
+against, which need rechecking if that topology has since changed.
+
+## 14. Feature branches in development (not yet merged into `version_1.0`)
 
 These exist in the repo's remotes but aren't part of `version_1.0` yet, so
 they're intentionally described only briefly here rather than as if
