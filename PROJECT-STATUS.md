@@ -5,15 +5,15 @@
 > for the real docs. This file just exists so picking this project back up
 > after a while doesn't mean re-deriving all of this from git log.
 >
-> Last updated: 2026-08-20, branch `version_1.0` @ `bd469c2` (+ this
-> session's uncommitted doc/test additions on top).
+> Last updated: 2026-08-20, branch `version_1.0` @ `8a18c82`.
 
 ## TL;DR
 
 `pola`/`polad` is a stateful active PCEP PCE (Go). Everything built this
-session is **merged into `version_1.0`** and passing its own test suite.
-The only thing genuinely left hanging is one test result I never got back
-(see "Open item" below) — everything else is done and verified.
+session is **merged into `version_1.0`**, and a full `tools/manual-tests/test-full.sh`
+run against the real lab came back **all tests passed** — nothing left
+hanging from this session. The "Future work" section below is the actual
+backlog for next time.
 
 ## What to do first when you come back
 
@@ -26,9 +26,8 @@ The only thing genuinely left hanging is one test result I never got back
    anything drifted while you were away).
 3. Rebuild and run `tools/manual-tests/test-full.sh` against the lab once
    it's reachable again — see [its README](tools/manual-tests/README.md).
-   That's the fastest way to confirm nothing regressed.
-4. Resolve the open item below before trusting waypoints/loose-source-routing
-   completely.
+   That's the fastest way to confirm nothing regressed while you were gone.
+4. Look at "Future work" below and pick where to pick up.
 
 ## What was built this session (all merged into `version_1.0`)
 
@@ -78,39 +77,39 @@ The only thing genuinely left hanging is one test result I never got back
 | `tools/sr-mesh` full-mesh provisioner | architecture doc §10 |
 | `tools/topology-viewer` web GUI | **not merged** — branch `add-topology-viewer` |
 
-## Open item — needs resolving, not yet closed out
+## Future work (backlog for next session)
 
-**Loose source routing (waypoints) test failure, root cause not yet
-confirmed.** During a `test-full.sh` run, Test 6 (waypoints) failed: a
-dynamic policy created with an explicit `waypoints: [{routerID: X}]`
-constraint computed a path that did **not** contain waypoint `X`'s own SID
-at all — which should be structurally impossible if
-`CSPFWithLooseSourceRouting` (`pkg/cspf/cspf.go`) is working correctly,
-since it always appends the waypoint's own segment.
+Not started — flagged during this session as worth doing, in no particular
+order:
 
-What's been ruled out or made unlikely:
-- Not the general "read too fast" race that caused most other failures in
-  earlier runs (that class of bug was fixed — see `wait_for_policy` in the
-  test script).
-- Not a stale leftover policy from a previous run — a pre-emptive
-  `delete_policy` cleanup was added at the start of every run specifically
-  to rule this out.
-- A *different* SRC/DST/WAYPOINT combination (auto-discovered on a
-  different run) passed correctly earlier in this same session, so it's
-  not a wholesale break of the feature — either a real edge case for
-  specific node combinations, or still some other test-script artifact not
-  yet identified.
-
-**Last action taken**: added a diagnostic line to `test-full.sh` (prints
-the full policy JSON + the resolved waypoint SID on failure) and handed it
-back to re-run — **the result of that re-run was never reported back**.
-That's the very next thing to chase: re-run `test-full.sh`, and if Test 6
-still fails, use the new diagnostic output plus `pola ted -j` (to inspect
-the real topology around whatever router got auto-discovered as the
-waypoint) to determine whether this is a genuine bug in
-`CSPFWithLooseSourceRouting`/`buildSectionSegments` or a script artifact.
-Don't assume either answer without that evidence — do the same
-verify-before-theorizing pass this session used throughout.
+1. **Onboard all lab nodes as PCCs.** Currently only three routers
+   (`SBLABO12`, `SRLABA14`, `SBLABO10`) run PCEP sessions to `polad` — the
+   rest of the topology (see the router table in
+   [`docs/sources/architecture-and-features.md`](docs/sources/architecture-and-features.md)
+   / the topology-viewer's `router_names.json`) isn't PCC-enabled yet.
+   Widening this changes what `tools/sr-mesh` and the manual test scripts'
+   auto-discovery actually cover.
+2. **Add link latency/delay metrics — static first, then dynamic via
+   TWAMP.** This directly relates to the `metric: delay` gap the test
+   suite already found: this lab's BGP-LS data currently carries no TE or
+   delay metric at all (IGP only), so `metric: delay`/`te` dynamic policies
+   can't compute. Start with static delay values configured on the
+   IGP/BGP-LS side, then look at TWAMP (RFC 5357-style two-way active
+   measurement) for real dynamic delay measurement feeding BGP-LS.
+3. **Investigate link-flap behavior.** What actually happens to reoptimization,
+   in-flight PCUpds, and the TED when a link flaps repeatedly in a short
+   window — is the 5s BGP-LS debounce (§4 of the architecture doc) enough,
+   does `reoptimizeMu`'s non-overlap guard hold up, does anything thrash or
+   miss a settle point? Not tested at all yet.
+4. **Test TI-LFA interaction.** Topology-Independent Loop-Free Alternate is
+   an IGP-level local fast-reroute mechanism — worth understanding/testing
+   how it interacts with `polad`'s own dynamic reoptimization (does IGP
+   TI-LFA already handle transient failures before BGP-LS/reoptimization
+   even reacts? do the two ever fight each other?).
+5. **Keep building out the topology-viewer GUI** (branch
+   `add-topology-viewer`, §10/§14 of the architecture doc) — not merged
+   into `version_1.0` yet, still has room for more work before that
+   decision.
 
 ## Quick command reference
 
